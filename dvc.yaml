@@ -1,0 +1,60 @@
+# dvc.yaml — the pipeline DAG: prepare -> train -> evaluate.
+# For each stage DVC hashes its deps + params + outs and stores them in dvc.lock.
+# On `dvc repro`, a stage re-runs only if one of its hashes changed; otherwise it
+# is skipped. Downstream stages re-run when an upstream `out` they depend on changes.
+
+stages:
+
+  # 1. Materialize the raw dataset once (download via torchvision).
+  prepare:
+    cmd: python src/prepare.py
+    deps:
+      - src/prepare.py
+      - src/utils.py
+    params:
+      - prepare              # scoped: changing a split ratio does NOT re-run prepare
+    outs:
+      - data/raw             # DVC-cached -> pushed to MinIO on `dvc push`
+
+  # 2. Train ResNet-18. Depends on the data produced by `prepare`.
+  train:
+    cmd: python src/train.py
+    deps:
+      - src/train.py
+      - src/dataset.py
+      - src/model.py
+      - src/utils.py
+      - data/raw             # upstream out: retrains if the dataset changes
+    params:
+      - seed
+      - data                 # split, image_size, normalization, augmentation
+      - model                # num_classes, pretrained, dropout
+      - train                # epochs, lr, batch_size, weight_decay, scheduler...
+    outs:
+      - models/best_model.pth
+
+  # 3. Evaluate on the test split. Depends on the trained model.
+  evaluate:
+    cmd: python src/evaluate.py
+    deps:
+      - src/evaluate.py
+      - src/dataset.py
+      - src/model.py
+      - src/utils.py
+      - data/raw
+      - models/best_model.pth   # upstream out: re-evaluates if the model changes
+    params:
+      - seed
+      - data
+      - model
+      - evaluate                # evaluate.batch_size only
+    metrics:
+      - metrics/metrics.json:     # small + diffable -> tracked by Git, not cached
+          cache: false
+    outs:
+      - metrics/confusion_matrix.png:
+          cache: false
+      - metrics/misclassified.png:
+          cache: false
+      - metrics/classification_report.txt:
+          cache: false

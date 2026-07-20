@@ -1,0 +1,51 @@
+# params.yaml — SINGLE SOURCE OF TRUTH for every hyperparameter.
+# Rule: no magic number lives in the code anymore. If DVC can't see a value
+# here, it can't detect its change and won't re-run the impacted stage.
+# Values below are copied 1:1 from the audited EuroSAT code (model unchanged).
+
+# --- Global -------------------------------------------------------------------
+# One seed governs ALL randomness (split, augmentation, weight init, shuffling).
+# Shared by train & evaluate so they reconstruct the SAME 70/15/15 split
+# (a per-stage seed would risk a train/test split mismatch = data leakage).
+seed: 42
+
+# --- prepare stage: materialize the raw dataset once --------------------------
+prepare:
+  data_dir: data/raw          # where the 27k images land (DVC-tracked output)
+
+# --- data: consumed by BOTH train & evaluate (identical loading) --------------
+data:
+  val_split: 0.15             # test_split idem; train = 1 - val - test = 0.70
+  test_split: 0.15
+  image_size: 224             # ResNet input size
+  num_workers: 2
+  # ImageNet normalization — required because the backbone is ImageNet-pretrained
+  norm_mean: [0.485, 0.456, 0.406]
+  norm_std:  [0.229, 0.224, 0.225]
+  augment:                    # applied to the TRAIN split only
+    hflip_p: 0.5
+    vflip_p: 0.5
+    rotation_deg: 15
+    jitter_brightness: 0.2
+    jitter_contrast: 0.2
+    jitter_saturation: 0.1
+
+# --- model: consumed by BOTH train & evaluate (identical build) ---------------
+model:
+  num_classes: 10
+  pretrained: true            # ImageNet weights; freeze all but layer4 + fc
+  dropout: 0.3                # head dropout
+
+# --- train stage --------------------------------------------------------------
+train:
+  epochs: 25
+  lr: 0.001
+  batch_size: 64
+  weight_decay: 0.0001        # Adam L2 (was hardcoded 1e-4)
+  patience: 5                 # early stopping on val loss
+  scheduler_factor: 0.1       # ReduceLROnPlateau
+  scheduler_patience: 3
+
+# --- evaluate stage -----------------------------------------------------------
+evaluate:
+  batch_size: 64

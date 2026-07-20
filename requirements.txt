@@ -1,0 +1,23 @@
+# Pinned to the EXACT versions used to build TerraOps.
+# Why '==' and not '>=': reproducibility. A '>=' lets a future `pip install`
+# pull a newer (possibly breaking) major version, so "same code" would run on a
+# different stack and could produce different results. Pinning freezes the stack.
+# Python: 3.12.x
+
+# --- Deep learning ---
+torch==2.10.0
+torchvision==0.25.0
+pillow==12.1.1
+
+# --- Data / metrics ---
+numpy==2.4.3
+scikit-learn==1.8.0
+matplotlib==3.10.8
+seaborn==0.13.2
+tqdm==4.67.3
+
+# --- Config ---
+pyyaml==6.0.3
+
+# --- MLOps: DVC with S3 extra (MinIO speaks the S3 protocol) ---
+dvc[s3]==3.67.1

@@ -1,0 +1,19 @@
+# MinIO — local S3-compatible object storage that will serve as the DVC remote.
+# `dvc push` sends data/model bytes here; `dvc pull` fetches them back.
+services:
+  minio:
+    image: minio/minio:latest          # TODO: pin a RELEASE.* tag for full repro
+    container_name: terraops-minio
+    ports:
+      - "9000:9000"                     # S3 API  -> used by DVC
+      - "9001:9001"                     # Web console -> http://localhost:9001
+    environment:
+      MINIO_ROOT_USER: minioadmin       # dev credentials only (change for prod)
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data                # persists objects across restarts
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+volumes:
+  minio-data:

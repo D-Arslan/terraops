@@ -1,0 +1,161 @@
+schema: '2.0'
+stages:
+  prepare:
+    cmd: python src/prepare.py
+    deps:
+    - path: src/prepare.py
+      hash: md5
+      md5: f87b4eba835c0727c027ec66d0fcb1e2
+      size: 1096
+    - path: src/utils.py
+      hash: md5
+      md5: 29b98f368beaea15b88fa03f8d25745a
+      size: 2381
+    params:
+      params.yaml:
+        prepare:
+          data_dir: data/raw
+    outs:
+    - path: data/raw
+      hash: md5
+      md5: 639ea9ac2ed1be8803091fcf456620a4.dir
+      size: 186124927
+      nfiles: 27001
+  train:
+    cmd: python src/train.py
+    deps:
+    - path: data/raw
+      hash: md5
+      md5: 639ea9ac2ed1be8803091fcf456620a4.dir
+      size: 186124927
+      nfiles: 27001
+    - path: src/dataset.py
+      hash: md5
+      md5: f134a1b54e6bddcaf8e0e2b99f973f09
+      size: 3771
+    - path: src/model.py
+      hash: md5
+      md5: c11593a9fa1a63c6df7247c81d9e1a7c
+      size: 1449
+    - path: src/train.py
+      hash: md5
+      md5: 4b88a632c6ac427035f5daba2e28a66d
+      size: 5270
+    - path: src/utils.py
+      hash: md5
+      md5: 29b98f368beaea15b88fa03f8d25745a
+      size: 2381
+    params:
+      params.yaml:
+        data:
+          val_split: 0.15
+          test_split: 0.15
+          image_size: 224
+          num_workers: 2
+          norm_mean:
+          - 0.485
+          - 0.456
+          - 0.406
+          norm_std:
+          - 0.229
+          - 0.224
+          - 0.225
+          augment:
+            hflip_p: 0.5
+            vflip_p: 0.5
+            rotation_deg: 15
+            jitter_brightness: 0.2
+            jitter_contrast: 0.2
+            jitter_saturation: 0.1
+        model:
+          num_classes: 10
+          pretrained: true
+          dropout: 0.3
+        seed: 42
+        train:
+          epochs: 1
+          lr: 0.001
+          batch_size: 64
+          weight_decay: 0.0001
+          patience: 5
+          scheduler_factor: 0.1
+          scheduler_patience: 3
+    outs:
+    - path: models/best_model.pth
+      hash: md5
+      md5: 81710b5605b9575599ff14ac97fedf72
+      size: 112009854
+  evaluate:
+    cmd: python src/evaluate.py
+    deps:
+    - path: data/raw
+      hash: md5
+      md5: 639ea9ac2ed1be8803091fcf456620a4.dir
+      size: 186124927
+      nfiles: 27001
+    - path: models/best_model.pth
+      hash: md5
+      md5: 81710b5605b9575599ff14ac97fedf72
+      size: 112009854
+    - path: src/dataset.py
+      hash: md5
+      md5: f134a1b54e6bddcaf8e0e2b99f973f09
+      size: 3771
+    - path: src/evaluate.py
+      hash: md5
+      md5: d1f3d2cf6fc54d2cda353ca0643f66aa
+      size: 5493
+    - path: src/model.py
+      hash: md5
+      md5: c11593a9fa1a63c6df7247c81d9e1a7c
+      size: 1449
+    - path: src/utils.py
+      hash: md5
+      md5: 29b98f368beaea15b88fa03f8d25745a
+      size: 2381
+    params:
+      params.yaml:
+        data:
+          val_split: 0.15
+          test_split: 0.15
+          image_size: 224
+          num_workers: 2
+          norm_mean:
+          - 0.485
+          - 0.456
+          - 0.406
+          norm_std:
+          - 0.229
+          - 0.224
+          - 0.225
+          augment:
+            hflip_p: 0.5
+            vflip_p: 0.5
+            rotation_deg: 15
+            jitter_brightness: 0.2
+            jitter_contrast: 0.2
+            jitter_saturation: 0.1
+        evaluate:
+          batch_size: 128
+        model:
+          num_classes: 10
+          pretrained: true
+          dropout: 0.3
+        seed: 42
+    outs:
+    - path: metrics/classification_report.txt
+      hash: md5
+      md5: 2ee98bcfa3ac30a0d7735f1854b479bd
+      size: 886
+    - path: metrics/confusion_matrix.png
+      hash: md5
+      md5: c142c987382567182063b39d4b89d350
+      size: 104932
+    - path: metrics/metrics.json
+      hash: md5
+      md5: f94d2ddba8a87015e699d1a46edcb2a2
+      size: 162
+    - path: metrics/misclassified.png
+      hash: md5
+      md5: 3ca54e19205bfff4a259a293b9bca9ce
+      size: 1515147

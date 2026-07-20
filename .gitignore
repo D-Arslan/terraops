@@ -1,0 +1,19 @@
+# --- Python ---
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+
+# --- DVC-tracked data & model artifacts ---
+# On NE commite PAS les octets lourds dans Git. DVC les gère :
+# - le dataset brut -> data/raw (le pointeur data/raw.dvc, lui, EST commité)
+# - les sorties du pipeline (models/, gros artefacts) sont auto-ignorées par DVC
+#   via des .gitignore générés dans dvc.yaml. On garde ici une ceinture de sécurité :
+/data/raw
+/models/*.pth
+
+# --- Logs & scratch ---
+logs/
+*.log
