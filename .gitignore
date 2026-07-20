@@ -17,3 +17,4 @@ venv/
 # --- Logs & scratch ---
 logs/
 *.log
+logs_*.txt
