@@ -73,7 +73,7 @@ stages:
           dropout: 0.3
         seed: 42
         train:
-          epochs: 1
+          epochs: 25
           lr: 0.001
           batch_size: 64
           weight_decay: 0.0001
@@ -83,7 +83,7 @@ stages:
     outs:
     - path: models/best_model.pth
       hash: md5
-      md5: 81710b5605b9575599ff14ac97fedf72
+      md5: fc6bea9870562b08982dfe48d2796baa
       size: 112009854
   evaluate:
     cmd: python src/evaluate.py
@@ -95,7 +95,7 @@ stages:
       nfiles: 27001
     - path: models/best_model.pth
       hash: md5
-      md5: 81710b5605b9575599ff14ac97fedf72
+      md5: fc6bea9870562b08982dfe48d2796baa
       size: 112009854
     - path: src/dataset.py
       hash: md5
@@ -136,7 +136,7 @@ stages:
             jitter_contrast: 0.2
             jitter_saturation: 0.1
         evaluate:
-          batch_size: 128
+          batch_size: 64
         model:
           num_classes: 10
           pretrained: true
@@ -145,17 +145,17 @@ stages:
     outs:
     - path: metrics/classification_report.txt
       hash: md5
-      md5: 2ee98bcfa3ac30a0d7735f1854b479bd
+      md5: c41fcb8ff3276137a63228740d7e6752
       size: 886
     - path: metrics/confusion_matrix.png
       hash: md5
-      md5: c142c987382567182063b39d4b89d350
-      size: 104932
+      md5: 500d2d1b3ca3f412edc39d4b34b7cc04
+      size: 102586
     - path: metrics/metrics.json
       hash: md5
-      md5: f94d2ddba8a87015e699d1a46edcb2a2
-      size: 162
+      md5: c62d80510e869722f6e224e82aaaafb5
+      size: 161
     - path: metrics/misclassified.png
       hash: md5
-      md5: 3ca54e19205bfff4a259a293b9bca9ce
-      size: 1515147
+      md5: 8c309899e58aa10bc41541f8763f3c78
+      size: 1304151
