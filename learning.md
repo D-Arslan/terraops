@@ -161,9 +161,11 @@ Il hashe `deps`, `params`, `outs` et compare au `dvc.lock` :
 - [x] `evaluate.batch_size` 64→128 → **seul `evaluate`** se relance (re-run scopé).
 - [x] `dvc push` → 27 003 objets / 287 MiB sur le bucket MinIO `terraops-dvc`.
 
-> Note : validé à `epochs=1` (~14 min CPU) pour prouver la mécanique. La config canonique
-> est revenue à `epochs=25` ; le modèle « réel » à 97,8 % se reconstruit via `dvc repro`
-> (long sur CPU) puis `dvc push`.
+> **Repro exacte confirmée** (2026-07-21) : `dvc repro` sur `epochs=25` (375 min CPU) a
+> reconstruit le modèle **au chiffre près** vs le modèle d'origine → 97,80 % test accuracy,
+> macro F1 0,9779, **89/4050** mal classés, best val_loss 0,0552. Même seed + stack épinglée
+> + split partagé = même modèle. Poussé sur MinIO + GitHub (commit `328d45a`).
+> Argument recruteur : « ma pipeline reproduit le modèle de référence bit-pour-bit ».
 
 ---
 
