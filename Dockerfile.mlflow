@@ -1,0 +1,8 @@
+# MLflow tracking server image.
+# The official image ships mlflow only; the server ALSO needs:
+#  - psycopg2: PostgreSQL driver for the backend store (runs/params/metrics/registry)
+#  - boto3: S3 client for the artifact store (MinIO) — server-side, because we run
+#    in proxied-artifact mode (--serve-artifacts): clients never touch S3 directly.
+FROM ghcr.io/mlflow/mlflow:v3.4.0
+
+RUN pip install --no-cache-dir psycopg2-binary==2.9.10 boto3==1.35.99

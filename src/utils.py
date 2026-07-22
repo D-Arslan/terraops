@@ -1,14 +1,18 @@
-"""Utility functions for reproducibility and logging."""
+"""Utility functions for reproducibility, logging, and lineage."""
 
 import os
 import random
 import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import yaml
 import numpy as np
 import torch
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def load_params(path: str = None) -> dict:
@@ -22,6 +26,47 @@ def load_params(path: str = None) -> dict:
         path = Path(__file__).resolve().parent.parent / "params.yaml"
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def get_git_commit() -> tuple:
+    """Return (commit_sha, is_dirty) for MLflow lineage tags.
+
+    is_dirty=True means the working tree differs from the commit, so the sha
+    alone does NOT fully identify the code that ran — the run must be flagged.
+    """
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
+    ).strip()
+    dirty = bool(subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=REPO_ROOT, text=True
+    ).strip())
+    return sha, dirty
+
+
+def get_dvc_data_hash(stage: str = "prepare", out_path: str = "data/raw") -> str:
+    """Read the dataset's content hash from dvc.lock (not recomputed: hashing
+    27k files on every run would be slow — dvc.lock IS the frozen record,
+    and it is itself committed, so git_dirty covers a stale lock).
+    """
+    with open(REPO_ROOT / "dvc.lock", "r", encoding="utf-8") as f:
+        lock = yaml.safe_load(f)
+    for out in lock["stages"][stage]["outs"]:
+        if out["path"] == out_path:
+            return out["md5"]
+    raise KeyError(f"{out_path} not found in dvc.lock stage '{stage}'")
+
+
+def flatten_params(d: dict, prefix: str = "") -> dict:
+    """Flatten a nested dict for mlflow.log_params: {'train': {'lr': 1e-3}}
+    -> {'train.lr': 1e-3}. Lists (e.g. norm_mean) are logged as strings."""
+    flat = {}
+    for k, v in d.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            flat.update(flatten_params(v, f"{key}."))
+        else:
+            flat[key] = v
+    return flat
 
 
 def set_seed(seed: int = 42):

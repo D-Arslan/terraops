@@ -1,5 +1,13 @@
-# MinIO — local S3-compatible object storage that will serve as the DVC remote.
-# `dvc push` sends data/model bytes here; `dvc pull` fetches them back.
+# TerraOps MLOps stack:
+#  - minio     S3-compatible object storage. TWO buckets, one per tool:
+#              terraops-dvc (data versioning) / terraops-mlflow (run artifacts).
+#              Separate lifecycles — a `dvc gc` must never be able to touch MLflow artifacts.
+#  - postgres  MLflow BACKEND STORE: runs, params, metrics, tags, registry.
+#              Relational + queryable ("sort runs by val_acc") — hence a real DB,
+#              not the default ./mlruns file store.
+#  - mlflow    Tracking server + Model Registry UI on http://localhost:5000.
+#              Proxied-artifact mode: the SERVER writes to MinIO; clients only
+#              need MLFLOW_TRACKING_URI, zero S3 credentials on the client side.
 services:
   minio:
     image: minio/minio:latest          # TODO: pin a RELEASE.* tag for full repro
@@ -15,5 +23,61 @@ services:
     command: server /data --console-address ":9001"
     restart: unless-stopped
 
+  # One-shot job: create both buckets (idempotent thanks to --ignore-existing),
+  # retrying until MinIO is ready. mlflow's depends_on waits for this to finish.
+  minio-init:
+    image: minio/mc:latest
+    container_name: terraops-minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done;
+      mc mb --ignore-existing local/terraops-dvc;
+      mc mb --ignore-existing local/terraops-mlflow;
+      "
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: terraops-postgres
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow          # dev credentials only
+      POSTGRES_DB: mlflow
+    volumes:
+      - pg-data:/var/lib/postgresql/data # run history survives restarts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    container_name: terraops-mlflow
+    ports:
+      - "5000:5000"                      # UI + API -> http://localhost:5000
+    environment:
+      # Server-side S3 credentials for the artifact proxy (never given to clients)
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    command: >
+      mlflow server
+      --backend-store-uri postgresql+psycopg2://mlflow:mlflow@postgres:5432/mlflow
+      --artifacts-destination s3://terraops-mlflow
+      --serve-artifacts
+      --host 0.0.0.0 --port 5000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   minio-data:
+  pg-data:

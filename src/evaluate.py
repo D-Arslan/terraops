@@ -114,7 +114,8 @@ def main():
 
     # Rebuild identical architecture, then load trained weights.
     model = build_model(
-        num_classes=mcfg["num_classes"], pretrained=False, dropout=mcfg["dropout"]
+        num_classes=mcfg["num_classes"], pretrained=False, dropout=mcfg["dropout"],
+        arch=mcfg["arch"], unfreeze=mcfg["unfreeze"],
     ).to(device)
     checkpoint = torch.load(MODEL_PATH, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])

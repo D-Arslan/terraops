@@ -32,9 +32,11 @@ data:
 
 # --- model: consumed by BOTH train & evaluate (identical build) ---------------
 model:
+  arch: resnet18              # resnet18 | mobilenet_v3_small
   num_classes: 10
-  pretrained: true            # ImageNet weights; freeze all but layer4 + fc
+  pretrained: true            # ImageNet weights
   dropout: 0.3                # head dropout
+  unfreeze: last_block        # none (head only) | last_block | all
 
 # --- train stage --------------------------------------------------------------
 train:
@@ -49,3 +51,16 @@ train:
 # --- evaluate stage -----------------------------------------------------------
 evaluate:
   batch_size: 64
+
+# --- promotion gate (promote.py — not a DVC stage, but thresholds are config,
+# not code, so they live here like every other tunable) ------------------------
+promote:
+  registry_model: terraops-eurosat
+  frozen_val_path: gate/frozen_val.json
+  min_accuracy: 0.90          # absolute floor; also the bootstrap rule when
+                              # no champion exists yet
+  min_delta: 0.003            # challenger must beat champion by >= 0.3 pt of
+                              # accuracy — a margin above seed/run noise, not
+                              # "greater by a hair"
+  max_class_recall_drop: 0.03 # no single class may lose > 3 pts of recall,
+                              # even if global accuracy improves

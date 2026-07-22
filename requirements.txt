@@ -21,3 +21,7 @@ pyyaml==6.0.3
 
 # --- MLOps: DVC with S3 extra (MinIO speaks the S3 protocol) ---
 dvc[s3]==3.67.1
+
+# --- MLOps: MLflow client — pinned to the SAME version as the server image
+# (Dockerfile.mlflow) to avoid client/server API drift.
+mlflow==3.4.0
