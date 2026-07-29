@@ -9,8 +9,8 @@ stages:
       size: 1096
     - path: src/utils.py
       hash: md5
-      md5: 29b98f368beaea15b88fa03f8d25745a
-      size: 2381
+      md5: 7fefeaa528b778c3388a5f8081cf9e7d
+      size: 4000
     params:
       params.yaml:
         prepare:
@@ -35,16 +35,16 @@ stages:
       size: 3771
     - path: src/model.py
       hash: md5
-      md5: c11593a9fa1a63c6df7247c81d9e1a7c
-      size: 1449
+      md5: c94ef9486752b0473ebd715f32694f6c
+      size: 3072
     - path: src/train.py
       hash: md5
-      md5: 4b88a632c6ac427035f5daba2e28a66d
-      size: 5270
+      md5: 5c1848db48615c931b8e5d9f64514f21
+      size: 11333
     - path: src/utils.py
       hash: md5
-      md5: 29b98f368beaea15b88fa03f8d25745a
-      size: 2381
+      md5: ceb4e986a3107ff66cfe480d5c097705
+      size: 4491
     params:
       params.yaml:
         data:
@@ -68,13 +68,15 @@ stages:
             jitter_contrast: 0.2
             jitter_saturation: 0.1
         model:
+          arch: resnet18
           num_classes: 10
           pretrained: true
           dropout: 0.3
+          unfreeze: last_block
         seed: 42
         train:
-          epochs: 25
-          lr: 0.001
+          epochs: 12
+          lr: 0.01
           batch_size: 64
           weight_decay: 0.0001
           patience: 5
@@ -83,7 +85,7 @@ stages:
     outs:
     - path: models/best_model.pth
       hash: md5
-      md5: fc6bea9870562b08982dfe48d2796baa
+      md5: 66eb9a48e7709fae9f973d5c76a74526
       size: 112009854
   evaluate:
     cmd: python src/evaluate.py
@@ -95,7 +97,7 @@ stages:
       nfiles: 27001
     - path: models/best_model.pth
       hash: md5
-      md5: fc6bea9870562b08982dfe48d2796baa
+      md5: 66eb9a48e7709fae9f973d5c76a74526
       size: 112009854
     - path: src/dataset.py
       hash: md5
@@ -103,16 +105,16 @@ stages:
       size: 3771
     - path: src/evaluate.py
       hash: md5
-      md5: d1f3d2cf6fc54d2cda353ca0643f66aa
-      size: 5493
+      md5: 2057ed2ade0f5a1ee37eeee86bcf9f23
+      size: 5548
     - path: src/model.py
       hash: md5
-      md5: c11593a9fa1a63c6df7247c81d9e1a7c
-      size: 1449
+      md5: c94ef9486752b0473ebd715f32694f6c
+      size: 3072
     - path: src/utils.py
       hash: md5
-      md5: 29b98f368beaea15b88fa03f8d25745a
-      size: 2381
+      md5: ceb4e986a3107ff66cfe480d5c097705
+      size: 4491
     params:
       params.yaml:
         data:
@@ -138,24 +140,26 @@ stages:
         evaluate:
           batch_size: 64
         model:
+          arch: resnet18
           num_classes: 10
           pretrained: true
           dropout: 0.3
+          unfreeze: last_block
         seed: 42
     outs:
     - path: metrics/classification_report.txt
       hash: md5
-      md5: c41fcb8ff3276137a63228740d7e6752
+      md5: 2369718d8e8531254aa4f904f418b53d
       size: 886
     - path: metrics/confusion_matrix.png
       hash: md5
-      md5: 500d2d1b3ca3f412edc39d4b34b7cc04
-      size: 102586
+      md5: 5af32ecb5a835c67bb34d693db5ac649
+      size: 108372
     - path: metrics/metrics.json
       hash: md5
-      md5: c62d80510e869722f6e224e82aaaafb5
-      size: 161
+      md5: c3c950f94c1deb49eb6990f2991736b8
+      size: 162
     - path: metrics/misclassified.png
       hash: md5
-      md5: 8c309899e58aa10bc41541f8763f3c78
-      size: 1304151
+      md5: c131f69ca682fc78e5eb52383e98dc97
+      size: 1411185

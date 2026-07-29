@@ -28,18 +28,27 @@ def load_params(path: str = None) -> dict:
         return yaml.safe_load(f)
 
 
+# Pipeline OUTPUTS: rewritten during `dvc repro` itself, so they are always
+# "modified" while a stage runs. Only INPUT drift (code, params) invalidates
+# lineage — flagging outputs would make git_dirty fire on every legitimate run.
+_DIRTY_IGNORED = ("dvc.lock", "metrics/")
+
+
 def get_git_commit() -> tuple:
     """Return (commit_sha, is_dirty) for MLflow lineage tags.
 
-    is_dirty=True means the working tree differs from the commit, so the sha
-    alone does NOT fully identify the code that ran — the run must be flagged.
+    is_dirty=True means an INPUT (code, params) differs from the commit, so the
+    sha does NOT fully identify what ran — the run must be flagged.
     """
     sha = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
     ).strip()
-    dirty = bool(subprocess.check_output(
+    status = subprocess.check_output(
         ["git", "status", "--porcelain"], cwd=REPO_ROOT, text=True
-    ).strip())
+    ).splitlines()
+    # porcelain format: "XY path" (or "XY old -> new" for renames)
+    dirty_paths = [line[3:].split(" -> ")[-1] for line in status if line.strip()]
+    dirty = any(not p.startswith(_DIRTY_IGNORED) for p in dirty_paths)
     return sha, dirty
 
 
