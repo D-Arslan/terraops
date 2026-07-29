@@ -23,12 +23,12 @@ data:
   norm_mean: [0.485, 0.456, 0.406]
   norm_std:  [0.229, 0.224, 0.225]
   augment:                    # applied to the TRAIN split only
-    hflip_p: 0.0              # exp 3: augmentation OFF (baseline: 0.5)
-    vflip_p: 0.0              # (baseline: 0.5)
-    rotation_deg: 0           # (baseline: 15)
-    jitter_brightness: 0.0    # (baseline: 0.2)
-    jitter_contrast: 0.0      # (baseline: 0.2)
-    jitter_saturation: 0.0    # (baseline: 0.1)
+    hflip_p: 0.5
+    vflip_p: 0.5
+    rotation_deg: 15
+    jitter_brightness: 0.2
+    jitter_contrast: 0.2
+    jitter_saturation: 0.1
 
 # --- model: consumed by BOTH train & evaluate (identical build) ---------------
 model:
@@ -36,7 +36,7 @@ model:
   num_classes: 10
   pretrained: true            # ImageNet weights
   dropout: 0.3                # head dropout
-  unfreeze: last_block        # none (head only) | last_block | all
+  unfreeze: none              # exp 4: head only (baseline: last_block)
 
 # --- train stage --------------------------------------------------------------
 train:
