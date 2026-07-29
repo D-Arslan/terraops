@@ -40,11 +40,11 @@ model:
 
 # --- train stage --------------------------------------------------------------
 train:
-  epochs: 12 #était 25
-  lr: 0.01 #était 0.001
+  epochs: 6                   # experiment budget (CPU) — identical for exps 2-5
+  lr: 0.0001                  # exp 2: 10x SMALLER than baseline (exp 1 was 0.01)
   batch_size: 64
   weight_decay: 0.0001        # Adam L2 (was hardcoded 1e-4)
-  patience: 5                 # early stopping on val loss
+  patience: 3                 # early stopping on val loss
   scheduler_factor: 0.1       # ReduceLROnPlateau
   scheduler_patience: 3
 
