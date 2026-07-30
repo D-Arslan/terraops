@@ -194,3 +194,119 @@ Il hashe `deps`, `params`, `outs` et compare au `dvc.lock` :
 3. **« Où sont stockés le dataset et les secrets, et pourquoi cette séparation ? »**
    Octets → MinIO (remote S3) via `dvc push` ; pointeurs + métriques → Git ; identifiants →
    `.dvc/config.local` gitignoré. But : reproductibilité + aucun secret dans l'historique Git.
+
+---
+
+## Sprint 2 — MLflow : tracking, registry, lineage, gate de promotion
+
+### Ce qu'on a construit
+
+- **Stack** (docker-compose) : PostgreSQL = *backend store* MLflow (runs, params,
+  métriques, registry — relationnel, requêtable) ; MinIO bucket `terraops-mlflow` =
+  *artifact store* (courbes, matrices, modèles — des blobs). Mode **proxy**
+  (`--serve-artifacts`) : le serveur écrit dans MinIO, les clients n'ont besoin que de
+  `MLFLOW_TRACKING_URI` — zéro credential S3 côté client.
+- **train.py instrumenté** : 1 exécution = 1 run (params aplatis, métriques par epoch
+  avec `step`, courbes + matrice de confusion val en artefacts, meilleur checkpoint
+  rechargé puis loggé). **Tags de lineage posés AVANT l'entraînement** : un run qui
+  crashe reste traçable.
+- **Lineage** = 2 tags par run : `git_commit` (le code) + `dvc_data_hash` (les octets
+  de données, lu dans `dvc.lock`). Chaîne d'audit : registry → run → tags →
+  `git checkout` + `dvc pull`. Le commit seul ne suffit pas : Git ne contient que le
+  *pointeur* vers les données.
+- **model.py paramétré** : `arch` (resnet18 | mobilenet_v3_small) et `unfreeze`
+  (none | last_block | all) → les expériences d'architecture/gel passent par params.yaml.
+- **Gate (`promote.py`)** : duel candidat vs `@champion` sur un **jeu figé**
+  (`gate/frozen_val.json`, 4 050 indices commités, estampillés du hash DVC — le gate
+  refuse de juger si les données ont changé). Trois règles : plancher absolu (90 %),
+  marge ≥ 0.3 pt (au-dessus du bruit), aucune classe ne perd > 3 pts de rappel.
+  Refus = exit 1 + version taguée `gate_result: refused` (décision archivée, pas effacée).
+
+### Concepts clés (à maîtriser pour l'entretien)
+
+| Concept | L'essentiel |
+|---------|-------------|
+| Tracking vs Registry | Cahier de labo (tous les runs, immuables) vs catalogue de gouvernance (modèles nommés, versions, alias). Analogie : commits vs tags de release. |
+| Artefact | Fichier produit par un run (blob). Pas dans Git : binaire, lourd, non-diffable, reproductible depuis les sources. Frontière Git : petit + diffable + utile en revue (metrics.json ✅, PNG ❌). |
+| Champion/challenger | Le titulaire garde le titre tant qu'un challenger ne gagne pas NETTEMENT sur le jeu figé. Promotion = décision scriptée, reproductible, auditable. |
+| Pourquoi un seuil | ±0.1 pt sur 4 050 images ≈ 4 images = bruit de seed. Une victoire dans la bande de bruit n'est pas une victoire. |
+| Jeu figé | Mêmes questions d'examen pour tous les duels, jamais vues à l'entraînement, versionnées. Sinon : fuite, ou terrain qui bouge. |
+| MLflow + DVC | DVC versionne les ENTRÉES et le procédé (reconstruire) ; MLflow enregistre les SORTIES des exécutions (comparer, gouverner). Le lineage les relie. |
+| Backfill | Quand le tracking arrive après un modèle existant, on logge le titulaire rétroactivement avec son VRAI lineage (le commit qui l'a entraîné, pas HEAD). |
+
+### La campagne (budget 6 epochs, CPU) — résultats et leçons
+
+| Run | val_acc pic | Leçon |
+|-----|------------|-------|
+| champion v1 (25 ep, backfill) | **98.10 %** | le budget de calcul est un hyperparamètre |
+| lr 0.001, aug OFF | 97.65 % | même pic que l'exp 2, mais overfitting dès l'ep. 4 (courbes qui divergent, early stop) — l'augmentation ne monte pas le pic, elle REPOUSSE l'overfitting |
+| lr 0.0001 | 97.63 % | en fine-tuning, les petits pas gagnent : les poids pré-entraînés partent déjà près du but |
+| lr 0.01 (12 ep) | 96.52 % | LR trop grand = oscillation sans fin de course ; le scheduler ReduceLROnPlateau n'a jamais déclenché (il faut patience+1 mauvais epochs CONSÉCUTIFS) |
+| mobilenet_v3_small | 95.93 % | entraîné en 25 min (vs ~95) — le trade-off vitesse/précision, chiffré |
+| unfreeze none | 88.62 % | dégeler le dernier bloc est LE levier du transfer learning (+9 pts) |
+
+Verdicts du gate : v1 promu (bootstrap) ; v2 (non entraîné, 11.5 %) refusé sur les 3
+règles ; v3 (lr 0.01) refusé marge + 2 classes en régression ; v4 (meilleur challenger,
+97.65 %) refusé sur la marge SEULE (−0.44 pt) — le refus le plus instructif : « presque
+pareil » ≠ « meilleur ».
+
+Piège vécu : `git_dirty` déclenchait sur `dvc.lock`/`metrics/` réécrits par `dvc repro`
+lui-même → le check ignore désormais les SORTIES du pipeline ; seule la dérive des
+ENTRÉES (code, params) invalide le lineage.
+
+### Questions de compréhension (réponses modèles)
+
+1. **30 runs dont 12 meilleurs que le champion : combien vont au registry ?**
+   Zéro ou un. Le registry n'est pas un classement par val_acc ; on y entre par
+   DÉCISION (gate passé, usage visé), pas par métrique. Les autres restent au tracking.
+2. **« Le PNG de 40 Ko, commitons-le comme metrics.json » ?**
+   La frontière n'est pas la taille : petit + DIFFABLE + utile en revue. Le PNG est
+   non-diffable et MLflow le compare mieux. Le modèle échoue sur tout (lourd, binaire,
+   produit reproductible).
+3. **MobileNet +0.2 pt : deux raisons de refuser ?**
+   (a) marge sous le bruit (~8 images sur 4 050) ; (b) régression possible sur une
+   classe minoritaire masquée par le global. (Bonus : duel valide seulement sur le MÊME
+   jeu figé.)
+4. **Prouver les données d'entraînement de la v2 ?**
+   Registry → run_id → tags `git_commit` + `dvc_data_hash` → `git checkout` (code,
+   params, dvc.lock) → `dvc pull` (les octets exacts). Le commit seul ne contient pas
+   les données, seulement le pointeur.
+5. **lr 0.0001 : forme de courbe et risque symétrique ?**
+   Descente lente et régulière ; risque symétrique = sous-convergence (budget épuisé
+   avant le plateau). VÉCU : le risque ne s'est pas matérialisé car fine-tuning de poids
+   pré-entraînés → petits pas suffisants (97.63 % en 6 ep). Le grain de vérité : reste
+   sous le champion 25 epochs.
+6. **Sans augmentation : train_acc vs val_acc, et le pic ?**
+   train_acc finit par DÉPASSER val_acc (croisement = début de l'overfitting, ep. 4) ;
+   pic quasi identique à l'exp 2 mais atteint plus vite, puis val_loss qui remonte
+   (0.0716 → 0.1390) pendant que train_loss descend = LA signature à savoir pointer.
+   Nuance mesure : train_acc est une moyenne SUR l'epoch (modèle en cours
+   d'amélioration), val_acc est mesurée en FIN d'epoch → train sous-estimée.
+7. **Tête seule : pic attendu ?**
+   Bien plus bas (88.6 %) : un classifieur linéaire sur des features ImageNet gelées ne
+   peut pas adapter les représentations aux images satellites.
+
+### Test d'acceptation du Sprint 2 — VALIDÉ
+
+- [x] Lineage 30 s : depuis `models:/terraops-eurosat@champion` → run → tags →
+  commandes `git checkout` + `dvc pull` exactes.
+- [x] Le gate refuse un modèle moins bon : démontré 3 fois (grossier v2, net v3, serré v4).
+
+### Questions type recruteur (Sprint 2)
+
+1. **« Tracking vs Registry ? »** Cahier de labo immuable vs catalogue de production
+   avec versions et alias — on ne « release » pas chaque commit.
+2. **« Comment garantissez-vous la traçabilité modèle → données ? »** Tags
+   `git_commit` + `dvc_data_hash` posés avant l'entraînement ; chaîne registry → run →
+   checkout + pull. Testé en conditions réelles.
+3. **« Un modèle gagne de 0.1 pt, vous le promouvez ? »** Non : bande de bruit, jeu
+   figé, non-régression par classe, coût d'inférence visible. Décision scriptée.
+4. **« Pourquoi le champion a-t-il eu plus d'epochs que les challengers ? »** Le gate
+   compare des MODÈLES finis, pas des protocoles. Un challenger peut prendre le même
+   budget ; seul le résultat sur le jeu figé compte.
+5. **« Une fois où le process a contredit votre intuition ? »** Duel final 97.65 vs
+   98.10 : « presque pareil » à l'œil, refus sur la marge au gate. Et une hypothèse
+   scheduler réfutée par l'historique du LR loggé — on ne devine pas, on logge.
+6. **« Quelle dette assumez-vous ? »** EuroSAT 64×64 natif upscalé à 224 (~12× de
+   calcul). Changement reporté sciemment : modifier les règles en pleine campagne
+   détruit la comparabilité (et le duel du gate).
