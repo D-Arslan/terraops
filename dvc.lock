@@ -61,18 +61,18 @@ stages:
           - 0.224
           - 0.225
           augment:
-            hflip_p: 0.0
-            vflip_p: 0.0
-            rotation_deg: 0
-            jitter_brightness: 0.0
-            jitter_contrast: 0.0
-            jitter_saturation: 0.0
+            hflip_p: 0.5
+            vflip_p: 0.5
+            rotation_deg: 15
+            jitter_brightness: 0.2
+            jitter_contrast: 0.2
+            jitter_saturation: 0.1
         model:
           arch: resnet18
           num_classes: 10
           pretrained: true
           dropout: 0.3
-          unfreeze: last_block
+          unfreeze: none
         seed: 42
         train:
           epochs: 6
@@ -85,8 +85,8 @@ stages:
     outs:
     - path: models/best_model.pth
       hash: md5
-      md5: cc345d0e1c43dd591eb6594f16fd64a7
-      size: 112009854
+      md5: b9069fc5669136a84997c9400b07f090
+      size: 44847697
   evaluate:
     cmd: python src/evaluate.py
     deps:
@@ -97,8 +97,8 @@ stages:
       nfiles: 27001
     - path: models/best_model.pth
       hash: md5
-      md5: cc345d0e1c43dd591eb6594f16fd64a7
-      size: 112009854
+      md5: b9069fc5669136a84997c9400b07f090
+      size: 44847697
     - path: src/dataset.py
       hash: md5
       md5: f134a1b54e6bddcaf8e0e2b99f973f09
@@ -131,12 +131,12 @@ stages:
           - 0.224
           - 0.225
           augment:
-            hflip_p: 0.0
-            vflip_p: 0.0
-            rotation_deg: 0
-            jitter_brightness: 0.0
-            jitter_contrast: 0.0
-            jitter_saturation: 0.0
+            hflip_p: 0.5
+            vflip_p: 0.5
+            rotation_deg: 15
+            jitter_brightness: 0.2
+            jitter_contrast: 0.2
+            jitter_saturation: 0.1
         evaluate:
           batch_size: 64
         model:
@@ -144,22 +144,22 @@ stages:
           num_classes: 10
           pretrained: true
           dropout: 0.3
-          unfreeze: last_block
+          unfreeze: none
         seed: 42
     outs:
     - path: metrics/classification_report.txt
       hash: md5
-      md5: 610d5587fba7daf4c2738a6f390426eb
+      md5: f69be256b30550433959f3972082b628
       size: 886
     - path: metrics/confusion_matrix.png
       hash: md5
-      md5: 8737d8b9b426b1df03c0469b656e9642
-      size: 103191
+      md5: 9e0ec9b0452ef05906eb43e63a87cc18
+      size: 117479
     - path: metrics/metrics.json
       hash: md5
-      md5: 15a9bbd8e75f04ee8880235454d181d6
+      md5: a13592286b54c7dbb7b92f8f1f466725
       size: 162
     - path: metrics/misclassified.png
       hash: md5
-      md5: 0f0ce84033a44e217db8d9b0e74a5c97
-      size: 1165749
+      md5: cd209fd5b9e41bd303840970b7b87129
+      size: 1555354

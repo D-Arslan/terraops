@@ -1,7 +1,7 @@
 {
-  "test_accuracy": 0.9681481481481482,
-  "macro_f1": 0.9674014522347024,
-  "weighted_f1": 0.9681791346305274,
+  "test_accuracy": 0.8827160493827161,
+  "macro_f1": 0.8813890874717961,
+  "weighted_f1": 0.8824840958783224,
   "n_test": 4050,
-  "n_misclassified": 129
+  "n_misclassified": 475
 }
