@@ -68,11 +68,11 @@ stages:
             jitter_contrast: 0.2
             jitter_saturation: 0.1
         model:
-          arch: resnet18
+          arch: mobilenet_v3_small
           num_classes: 10
           pretrained: true
           dropout: 0.3
-          unfreeze: none
+          unfreeze: last_block
         seed: 42
         train:
           epochs: 6
@@ -85,8 +85,8 @@ stages:
     outs:
     - path: models/best_model.pth
       hash: md5
-      md5: b9069fc5669136a84997c9400b07f090
-      size: 44847697
+      md5: 98e118587d9f5793f16a6640a35819a5
+      size: 13873665
   evaluate:
     cmd: python src/evaluate.py
     deps:
@@ -97,8 +97,8 @@ stages:
       nfiles: 27001
     - path: models/best_model.pth
       hash: md5
-      md5: b9069fc5669136a84997c9400b07f090
-      size: 44847697
+      md5: 98e118587d9f5793f16a6640a35819a5
+      size: 13873665
     - path: src/dataset.py
       hash: md5
       md5: f134a1b54e6bddcaf8e0e2b99f973f09
@@ -140,26 +140,26 @@ stages:
         evaluate:
           batch_size: 64
         model:
-          arch: resnet18
+          arch: mobilenet_v3_small
           num_classes: 10
           pretrained: true
           dropout: 0.3
-          unfreeze: none
+          unfreeze: last_block
         seed: 42
     outs:
     - path: metrics/classification_report.txt
       hash: md5
-      md5: f69be256b30550433959f3972082b628
+      md5: bd7720856c364fc9874a01bb58d70abd
       size: 886
     - path: metrics/confusion_matrix.png
       hash: md5
-      md5: 9e0ec9b0452ef05906eb43e63a87cc18
-      size: 117479
+      md5: 49a6ee6a1638297c7c017a3d9659509c
+      size: 110464
     - path: metrics/metrics.json
       hash: md5
-      md5: a13592286b54c7dbb7b92f8f1f466725
+      md5: b2c07ced5162301a08601cc8f6846347
       size: 162
     - path: metrics/misclassified.png
       hash: md5
-      md5: cd209fd5b9e41bd303840970b7b87129
-      size: 1555354
+      md5: 07738d686a69719d482a1a39051f8297
+      size: 1490238
