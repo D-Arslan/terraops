@@ -25,3 +25,12 @@ dvc[s3]==3.67.1
 # --- MLOps: MLflow client — pinned to the SAME version as the server image
 # (Dockerfile.mlflow) to avoid client/server API drift.
 mlflow==3.4.0
+
+# --- Serving: FastAPI app (src/api.py) ---
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+python-multipart==0.0.32        # required by FastAPI to parse UploadFile (multipart)
+
+# --- Tests ---
+pytest==9.1.1
+httpx==0.28.1                    # FastAPI TestClient transport (used in tests/)

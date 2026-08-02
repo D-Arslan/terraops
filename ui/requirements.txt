@@ -1,0 +1,7 @@
+# UI image dependencies — deliberately torch-free.
+# The Streamlit app is a THIN CLIENT of the API: it never loads the model, so it
+# needs none of the deep-learning stack. This is why the UI image stays tiny.
+streamlit==1.60.0
+folium==0.20.0
+streamlit-folium==0.27.3
+requests==2.34.2

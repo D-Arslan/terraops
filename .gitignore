@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 .env
+.pytest_cache/
 
 # --- DVC-tracked data & model artifacts ---
 # On NE commite PAS les octets lourds dans Git. DVC les gère :

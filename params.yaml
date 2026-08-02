@@ -64,3 +64,17 @@ promote:
                               # "greater by a hair"
   max_class_recall_drop: 0.03 # no single class may lose > 3 pts of recall,
                               # even if global accuracy improves
+
+# --- model non-regression tests (tests/test_model_regression.py) --------------
+# Thresholds for the pytest safety net that replays the gate's spirit in CI:
+# the SERVED champion (models:/...@champion) must still hold its behavior on the
+# frozen set. Config, not code — same rule as everywhere else.
+nonreg:
+  regression_tolerance: 0.01  # champion accuracy may not drop > 1 pt below the
+                              # baseline it was gated at (its recorded gate_accuracy)
+  min_class_recall: 0.90      # absolute per-class recall floor on the frozen set
+  invariance_agreement: 0.95  # >= 95% of predictions must be unchanged by a
+                              # label-preserving perturbation (hflip, JPEG re-encode)
+  invariance_sample: 200      # images sampled for the (costly) invariance checks
+  max_latency_ms: 400         # p95 budget for a single-image forward pass (CPU)
+  latency_sample: 50          # images timed one-by-one for the latency budget

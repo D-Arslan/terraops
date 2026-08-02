@@ -4,6 +4,8 @@ import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
+from preprocessing import build_eval_transform
+
 
 EUROSAT_CLASSES = [
     "AnnualCrop", "Forest", "HerbaceousVegetation", "Highway",
@@ -13,26 +15,29 @@ EUROSAT_CLASSES = [
 
 
 def get_transforms(data_cfg: dict, train: bool = True):
-    """Build transforms from params. Augmentation applies to the train split only."""
+    """Build transforms from params. Augmentation applies to the train split only.
+
+    The EVAL branch (train=False) is NOT defined here anymore: it is the shared
+    inference contract, owned by preprocessing.build_eval_transform and imported
+    by train.py, the promotion gate, AND the serving API. One definition, so
+    train/serving skew cannot exist. Augmentation stays train-only and local.
+    """
+    if not train:
+        return build_eval_transform(data_cfg)
+
     size = data_cfg["image_size"]
     mean, std = data_cfg["norm_mean"], data_cfg["norm_std"]
-    if train:
-        aug = data_cfg["augment"]
-        return transforms.Compose([
-            transforms.Resize((size, size)),
-            transforms.RandomHorizontalFlip(p=aug["hflip_p"]),
-            transforms.RandomVerticalFlip(p=aug["vflip_p"]),
-            transforms.RandomRotation(aug["rotation_deg"]),
-            transforms.ColorJitter(
-                brightness=aug["jitter_brightness"],
-                contrast=aug["jitter_contrast"],
-                saturation=aug["jitter_saturation"],
-            ),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
-        ])
+    aug = data_cfg["augment"]
     return transforms.Compose([
         transforms.Resize((size, size)),
+        transforms.RandomHorizontalFlip(p=aug["hflip_p"]),
+        transforms.RandomVerticalFlip(p=aug["vflip_p"]),
+        transforms.RandomRotation(aug["rotation_deg"]),
+        transforms.ColorJitter(
+            brightness=aug["jitter_brightness"],
+            contrast=aug["jitter_contrast"],
+            saturation=aug["jitter_saturation"],
+        ),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean, std=std),
     ])

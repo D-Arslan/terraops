@@ -76,6 +76,44 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+    healthcheck:
+      # Gate downstream services on a REAL /health 200, not just "container up",
+      # so the API never boots against a not-yet-ready registry.
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Serving API: loads models:/terraops-eurosat@champion by ALIAS from the registry.
+  # Proxied-artifact mode -> only MLFLOW_TRACKING_URI needed, zero S3 credentials.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: terraops-api
+    ports:
+      - "8000:8000"                      # http://localhost:8000 (/docs for Swagger)
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      mlflow:
+        condition: service_healthy       # wait for the registry to actually answer
+    restart: unless-stopped
+
+  # Streamlit UI: a THIN CLIENT of the API (no model, no torch in this image).
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: terraops-ui
+    ports:
+      - "8501:8501"                      # http://localhost:8501
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
     restart: unless-stopped
 
 volumes:

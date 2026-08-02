@@ -310,3 +310,139 @@ ENTRÉES (code, params) invalide le lineage.
 6. **« Quelle dette assumez-vous ? »** EuroSAT 64×64 natif upscalé à 224 (~12× de
    calcul). Changement reporté sciemment : modifier les règles en pleine campagne
    détruit la comparabilité (et le duel du gate).
+
+---
+
+## Sprint 3 — Serving : de la gouvernance à la production
+
+Objet du sprint : servir le champion gouverné, sans réintroduire les bugs que
+Sprints 1-2 ont bannis. Le modèle ne change pas ; l'outillage autour du serving,
+oui.
+
+### Concept n°1 — Train/serving skew (le bug silencieux n°1 en ML prod)
+
+Un modèle n'est pas `model.pth`, c'est `model(preprocessing(input))`. Le skew =
+`preprocessing_train ≠ preprocessing_serving`. Il ne CRIE pas : shape valide,
+forward OK, une classe sort avec une belle proba — juste fausse plus souvent. Et
+en prod on n'a pas les labels, donc on ne mesure pas la chute d'accuracy en direct.
+Coût de détection énorme.
+
+Sources concrètes sur images (à savoir citer) : **ordre des canaux** (PIL=RGB vs
+cv2=BGR), **normalisation** oubliée (`[0,1]` au lieu des stats ImageNet),
+**interpolation** du resize (bilinear vs bicubic — deux personnes « resize en 224 »
+ont raison toutes les deux et produisent des tenseurs différents), **canal alpha**
+(RGBA→4 canaux), **rotation EXIF** non appliquée.
+
+**La parade structurelle** : UN module `src/preprocessing.py` importé par
+`train.py` (via `dataset.py`), par le gate ET par l'API. Il n'y a plus deux
+fonctions à synchroniser, il n'y en a qu'une → le skew devient IMPOSSIBLE par
+construction, pas « évité par vigilance ». Vérifié : `torch.equal(ancienne_transform,
+build_eval_transform) == True` → zéro skew introduit contre le champion v1.
+
+**Le piège que j'ai compris** : la garantie du module s'arrête à sa FRONTIÈRE
+d'entrée. Si l'API décode elle-même en BGR avant d'appeler le module, le skew est
+né AVANT. → le module doit posséder AUSSI le décodage (bytes → PIL RGB), pas
+seulement les transforms. D'où `decode_image` : `convert("RGB")` (tue BGR/alpha/
+grayscale) + `exif_transpose` (no-op sur EuroSAT donc zéro skew, mais robuste sur
+uploads réels) + interpolation bilinear ÉPINGLÉE (le défaut torchvision a dérivé
+entre versions).
+
+### Concept n°2 — Charger par ALIAS depuis le registry
+
+`models:/terraops-eurosat@champion` est un POINTEUR résolu à l'exécution, pas un
+chemin. Conséquence le jour où on change de modèle en prod :
+- chemin `.pth` en dur → modifier le code, rebuild, redéployer = **déploiement de
+  code** ;
+- alias → `promote.py` déplace `@champion`, l'API re-résout = **acte de
+  gouvernance**, découplé du code. + rollback instantané (repointer l'alias) +
+  traçabilité (le registry sait qui est champion, depuis quand, quel run/commit/data).
+
+**Piège de fraîcheur** : l'alias est résolu au `load_model`, donc UNE fois au
+startup. Promouvoir à 14h ne notifie pas un process lancé → il sert l'ancien.
+Parade : `POST /reload` re-résout et hot-swap SI la version a changé (on compare la
+version avant de payer un `load_model` — pas de check registry sur le chemin chaud
+`/predict`). C'est ce qui rend vrai « promouvoir → l'API sert le nouveau sans
+toucher au code ».
+
+### Concept n°3 — Test de non-régression de MODÈLE
+
+Diffère d'un test unitaire : l'unitaire teste du code déterministe (sortie exacte
+connue) ; la non-régression teste une PROPRIÉTÉ STATISTIQUE au-dessus d'un seuil
+(accuracy globale, recall PAR CLASSE, invariances, budget de latence). Le point
+contre-intuitif : **il peut être ROUGE alors que le code est correct** — car il
+surveille le comportement émergent (code + poids + dépendances), pas la logique. Un
+`pip install` qui change l'interpolation de Pillow → skew → accuracy du champion qui
+chute → test rouge, code inchangé. C'est un détecteur de skew contre notre propre
+champion.
+
+Le seuil global seul NE SUFFIT PAS : il noie l'effondrement d'une classe minoritaire
+(Highway 94→60 % pendant que la moyenne bouge de 0.3 pt). D'où le plancher PAR
+CLASSE — même logique que `max_class_recall_drop` du gate. Ces tests sont la version
+pytest/CI de `promote.py` : mêmes seuils (`params.yaml`), même jeu figé.
+
+### Décisions de design (et leurs justifications)
+
+1. **Démarrage dégradé, pas fail-fast.** Dans `docker compose up`, l'API et MLflow
+   démarrent ensemble ; fail-fast ferait crash-looper l'API parce que MLflow a booté
+   2 s plus tard, ou qu'aucun champion n'est promu. Dégradé : `/health` répond 200
+   (liveness) avec `model_loaded: false`, `/predict` et `/model-info` renvoient 503
+   (readiness). Récupération par `/reload` sans redémarrage. Healthcheck MLflow dans
+   le compose → l'API ne boote qu'une fois le registry prêt (évite le hang de 120 s
+   du timeout HTTP MLflow par défaut).
+2. **UI = client léger de l'API, JAMAIS de modèle en direct.** Sinon 3e copie du
+   modèle + nouvelle surface de skew. Conséquence : l'image UI est SANS torch — elle
+   connaît le modèle uniquement par le JSON de l'API (classes = strings). L'UI affiche
+   toujours la VERSION servie (traçabilité jusqu'à l'utilisateur).
+3. **Image API slim.** `requirements-api.txt` séparé : torch/torchvision **+cpu**
+   (index PyTorch CPU, zéro payload CUDA = le plus gros levier), SANS matplotlib/
+   seaborn/sklearn/dvc. Mode proxied-artifacts → l'API n'a besoin que de
+   `MLFLOW_TRACKING_URI`, AUCUNE credential S3 (le serveur MLflow proxy les artefacts).
+   Résultat : API 2.53 Go (mlflow tire pandas/scipy), UI 784 Mo — bien sous les 5 Go.
+4. **Démo du hot-swap sur alias JETABLE, jamais `@champion` à la main.** La règle
+   « jamais d'alias posé à la main » est de gouvernance. Pour prouver `/reload` sans
+   la violer : alias `reload_test` créé → déplacé v1→v2 → `/reload` détecte
+   (`reloaded:true, version:2`) → alias supprimé, `@champion` toujours v1.
+
+### Test d'acceptation du Sprint 3 — VALIDÉ (en conteneurs)
+
+- [x] `docker compose up` → API répond, `model_loaded: true`, sert `@champion` v1
+  chargé par alias depuis le registry conteneurisé (proxied artifacts, zéro cred S3).
+- [x] `/predict` sur vraie tuile EuroSAT (AnnualCrop → AnnualCrop 0.97), `/predict/batch`,
+  chaque réponse porte `model_version`.
+- [x] UI up (`:8501` → 200), carte folium colorée par usage du sol.
+- [x] Hot-swap : alias déplacé → `/reload` sert la nouvelle version SANS toucher au
+  code ni redémarrer (prouvé sur alias jetable).
+- [x] Tests : 13 passed (preprocessing + contrat API dégradé) + 5 non-régression verts
+  contre le champion v1 réel (accuracy > baseline 0.9810, recall par classe, invariances
+  hflip/JPEG, latence).
+
+### Questions type recruteur (Sprint 3)
+
+1. **« Qu'est-ce que le train/serving skew et pourquoi c'est vicieux ? »** Décalage de
+   preprocessing entre train et prod ; silencieux car pas de labels en prod, ça dégrade
+   sans erreur. Parade structurelle : module partagé → skew impossible, pas « évité ».
+2. **« Votre module partagé élimine-t-il TOUT skew ? »** Non : seulement à partir de sa
+   frontière. Ce qui se passe avant (décodage, ordre des canaux, EXIF) doit être DANS le
+   module, sinon la garantie ne couvre pas. D'où décodage inclus.
+3. **« Pourquoi charger par alias plutôt qu'un `.pth` ? »** Changer de modèle devient un
+   acte de gouvernance (déplacer l'alias) et non un déploiement de code ; rollback
+   instantané ; traçabilité.
+4. **« Registry down au démarrage de l'API ? »** Dégradation gracieuse + `/health`
+   readiness + `/reload` pour récupérer sans redémarrage ; healthcheck compose pour
+   l'ordre de boot.
+5. **« Un test de non-régression rouge, code inchangé — trois causes ? »** Nouveau
+   champion qui régresse une classe (le test fait son travail) ; bump de dépendance qui
+   introduit du skew ; dataset dérivé. On les distingue par le lineage (commit/data-hash)
+   et par quelle assertion tombe (globale vs par classe vs invariance).
+6. **« Pourquoi un seuil global d'accuracy ne suffit pas ? »** Il noie l'effondrement
+   d'une classe minoritaire → plancher par classe obligatoire, comme au gate.
+7. **« Comment gardez-vous l'image API sous 5 Go ? »** Wheels torch CPU (pas de CUDA),
+   requirements de serving séparés du training, proxied-artifacts (pas de stack S3
+   cliente), UI sans torch dans une image distincte.
+
+### Dette / pistes Sprint 4
+
+- `/reload` manuel : pas de TTL auto ni de webhook registry (fraîcheur à la demande).
+- Image API 2.53 Go : `mlflow-skinny` + flavor PyTorch seul pourrait réduire encore.
+- Pas encore de CI qui rejoue le gate/non-régression sur PR (les tests lents ~5 min →
+  nightly vs bloquant à décider). Monitoring de drift en prod : non commencé.

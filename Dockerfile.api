@@ -1,0 +1,30 @@
+# TerraOps serving API — slim, CPU-only image.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# libgomp1: OpenMP runtime that the CPU torch wheels link against (absent from slim).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install deps first (cached layer) — CPU wheels come from the index in the file.
+COPY requirements-api.txt .
+RUN pip install --no-cache-dir -r requirements-api.txt
+
+# Only what serving needs: the source package and the params (single source of
+# truth for image_size / normalization). No data, no dvc.lock, no git needed here.
+COPY src/ ./src/
+COPY params.yaml ./
+
+ENV MLFLOW_TRACKING_URI=http://mlflow:5000 \
+    # Fail fast instead of the 120s default if the registry is briefly unreachable.
+    MLFLOW_HTTP_REQUEST_TIMEOUT=5 \
+    MLFLOW_HTTP_REQUEST_MAX_RETRIES=1 \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+# --app-dir src puts the flat modules (api, dataset, preprocessing, utils) on the
+# import path, matching how the scripts are run locally.
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "src"]

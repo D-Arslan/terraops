@@ -1,0 +1,24 @@
+# Serving API image dependencies — SLIM and CPU-only.
+# What the API image deliberately does NOT contain (unlike requirements.txt):
+#   matplotlib, seaborn, scikit-learn  -> training/plotting only
+#   dvc[s3], tqdm                       -> pipeline/data tooling, not serving
+#   streamlit / folium                 -> the UI is a separate, torch-free image
+# torch/torchvision come from the PyTorch CPU index (+cpu wheels): no CUDA payload,
+# which is the single biggest lever against a multi-GB image.
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.10.0+cpu
+torchvision==0.25.0+cpu
+pillow==12.1.1
+numpy==2.4.3
+pyyaml==6.0.3
+
+# Registry client — loads models:/...@champion via the tracking server's artifact
+# proxy, so NO S3 credentials are needed on this client.
+mlflow==3.4.0
+
+# Web layer
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+python-multipart==0.0.32
