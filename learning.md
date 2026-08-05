@@ -416,29 +416,72 @@ pytest/CI de `promote.py` : mêmes seuils (`params.yaml`), même jeu figé.
   contre le champion v1 réel (accuracy > baseline 0.9810, recall par classe, invariances
   hflip/JPEG, latence).
 
-### Questions type recruteur (Sprint 3)
+### Questions type recruteur (Sprint 3) — réponses développées
 
-1. **« Qu'est-ce que le train/serving skew et pourquoi c'est vicieux ? »** Décalage de
-   preprocessing entre train et prod ; silencieux car pas de labels en prod, ça dégrade
-   sans erreur. Parade structurelle : module partagé → skew impossible, pas « évité ».
-2. **« Votre module partagé élimine-t-il TOUT skew ? »** Non : seulement à partir de sa
-   frontière. Ce qui se passe avant (décodage, ordre des canaux, EXIF) doit être DANS le
-   module, sinon la garantie ne couvre pas. D'où décodage inclus.
-3. **« Pourquoi charger par alias plutôt qu'un `.pth` ? »** Changer de modèle devient un
-   acte de gouvernance (déplacer l'alias) et non un déploiement de code ; rollback
-   instantané ; traçabilité.
-4. **« Registry down au démarrage de l'API ? »** Dégradation gracieuse + `/health`
-   readiness + `/reload` pour récupérer sans redémarrage ; healthcheck compose pour
-   l'ordre de boot.
-5. **« Un test de non-régression rouge, code inchangé — trois causes ? »** Nouveau
-   champion qui régresse une classe (le test fait son travail) ; bump de dépendance qui
-   introduit du skew ; dataset dérivé. On les distingue par le lineage (commit/data-hash)
-   et par quelle assertion tombe (globale vs par classe vs invariance).
-6. **« Pourquoi un seuil global d'accuracy ne suffit pas ? »** Il noie l'effondrement
-   d'une classe minoritaire → plancher par classe obligatoire, comme au gate.
-7. **« Comment gardez-vous l'image API sous 5 Go ? »** Wheels torch CPU (pas de CUDA),
-   requirements de serving séparés du training, proxied-artifacts (pas de stack S3
-   cliente), UI sans torch dans une image distincte.
+1. **« Qu'est-ce que le train/serving skew et pourquoi c'est vicieux ? »**
+   Un modèle en prod n'est pas `model.pth`, c'est `model(preprocessing(x))`. Le skew =
+   preprocessing d'entraînement ≠ preprocessing de serving : mêmes poids, mais tenseurs
+   d'une distribution différente de celle vue à l'entraînement. Vicieux pour 3 raisons
+   cumulées : (1) AUCUNE erreur — shape valide, forward OK, proba confiante ; (2) pas de
+   labels en prod → accuracy non mesurée en direct, dégradation invisible aux dashboards
+   (latence/erreurs HTTP tout vert) ; (3) cause souvent anodine (cv2 BGR, Normalize
+   oublié, interpolation par défaut). Découvert tard, via jeu de contrôle ou plainte.
+   Parade : un seul module preprocessing (train + serving) → skew IMPOSSIBLE par
+   construction, pas « surveillé ».
+
+2. **« Votre module partagé élimine-t-il TOUT skew ? »**
+   Non, et ne pas le survendre. La garantie ne vaut qu'à partir de la FRONTIÈRE d'entrée.
+   Décodage, ordre des canaux, EXIF se passent AVANT : hors garantie si le module ne les
+   possède pas. API qui décode en BGR puis passe le tableau → le module applique la bonne
+   transform à une entrée déjà corrompue. D'où frontière aux BYTES bruts : `decode_image`
+   = `convert("RGB")` + `exif_transpose`, l'API ne décode pas elle-même. Honnêteté : ne
+   protège pas non plus du skew de DONNÉES (drift de la distribution) → c'est le
+   monitoring, autre sujet.
+
+3. **« Pourquoi charger par alias plutôt qu'un `.pth` ? »**
+   Ça déplace le changement de modèle du cycle de vie du CODE vers celui de la
+   GOUVERNANCE. Chemin en dur → modifier code, rebuild, redéployer (déploiement logiciel).
+   Alias → promouvoir = déplacer l'alias (via promote.py), l'API re-résout. Bénéfices :
+   rollback instantané (repointer l'alias = 1 commande, pas un redéploiement) ; séparation
+   des responsabilités (qui décide du champion ≠ qui opère l'API) ; traçabilité (registry
+   sait qui/depuis quand/quel run-commit-data ; un chemin ne sait rien). Nuance : alias
+   résolu au chargement → `/reload` pour propager sans redémarrer.
+
+4. **« Registry down au démarrage de l'API ? »**
+   Dégradation gracieuse, PAS fail-fast — raison conteneurs : dans `compose up`, API et
+   MLflow démarrent ensemble ; fail-fast ferait crash-looper l'API parce que MLflow a
+   booté 2 s plus tard ou qu'aucun champion n'est promu. Donc : API boote toujours ;
+   `/health` 200 (LIVENESS) avec `model_loaded:false` ; `/predict` et `/model-info` → 503
+   (READINESS). Récupération par `/reload`, sans redémarrage. Ordre de boot gaté au niveau
+   compose (healthcheck MLflow + `depends_on: service_healthy`), ce qui évite aussi le
+   timeout HTTP MLflow par défaut (120 s). Clé : liveness ≠ readiness.
+
+5. **« Un test de non-régression rouge, code inchangé — trois causes ? »**
+   Cadre : ce test assert une PROPRIÉTÉ STATISTIQUE du couple (code + poids +
+   dépendances), pas une sortie exacte → peut virer rouge sans code modifié. Causes : (a)
+   nouveau champion globalement meilleur mais qui régresse une classe → le test fait son
+   travail ; (b) bump de dépendance qui change le comportement (Pillow → interpolation →
+   skew) ; (c) jeu de contrôle dérivé (hash changé). Distinction par le LINEAGE
+   (git_commit/dvc_data_hash : code ou données ont bougé ?) et par QUELLE assertion tombe
+   (globale = dépendance/skew ; une classe = régression localisée ; invariance = transform ;
+   data_hash différent = drift du jeu figé).
+
+6. **« Pourquoi un seuil global d'accuracy ne suffit pas ? »**
+   La moyenne sur 10 classes déséquilibrées NOIE l'effondrement d'une classe minoritaire.
+   Highway/River pèsent peu : recall 94→60 % pendant que l'accuracy globale bouge de
+   ~0.3 pt → sous un seuil de 0.95, tout reste vert, on déploie un modèle aveugle aux
+   autoroutes. D'où plancher PAR CLASSE en plus du global, comme `max_class_recall_drop`
+   au gate. « La moyenne est un mauvais résumé quand la distribution est déséquilibrée et
+   le coût d'erreur non uniforme. »
+
+7. **« Comment gardez-vous l'image API sous 5 Go ? »**
+   4 leviers, du plus gros au plus fin : (1) wheels torch/torchvision `+cpu` (index PyTorch
+   CPU) → supprime le payload CUDA (plusieurs Go) inutile en serving CPU ; (2)
+   `requirements-api.txt` séparé du training (pas de matplotlib/seaborn/sklearn/dvc) ; (3)
+   proxied-artifacts → l'API télécharge via le proxy MLflow, pas de S3/boto3 ni de creds
+   client ; (4) UI séparée et SANS torch (client léger). Mesuré : API 2.53 Go, UI 784 Mo.
+   Honnêteté : les 2.53 Go viennent surtout de mlflow (pandas/scipy) → piste
+   `mlflow-skinny` + flavor PyTorch seul.
 
 ### Dette / pistes Sprint 4
 

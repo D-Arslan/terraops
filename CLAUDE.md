@@ -78,7 +78,7 @@ gouvernance). Le propriétaire du repo est en préparation d'entretiens MLOps.
   API FastAPI chargeant `@champion` par alias avec hot-swap `/reload`, UI Streamlit
   cliente + carte folium, tests unitaires + non-régression, images Docker slim (API
   2.53 Go torch-CPU, UI 784 Mo sans torch). Test d'acceptation validé en conteneurs.
-  Détails + questions recruteur dans `learning.md`.
+  Détails + 7 questions recruteur AVEC réponses développées dans `learning.md`.
 - Dette connue : images 64×64 natives upscalées à 224 (~12× de calcul) — ne pas
   changer en cours de campagne comparative. `/reload` manuel (pas de TTL/webhook).
   API 2.53 Go (piste : `mlflow-skinny`).
