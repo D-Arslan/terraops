@@ -25,17 +25,15 @@ import os
 import sys
 import time
 
+import mlflow
 import numpy as np
 import torch
+from mlflow import MlflowClient
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets
 
-import mlflow
-from mlflow import MlflowClient
-
-from dataset import get_transforms, EUROSAT_CLASSES
-from utils import load_params, get_dvc_data_hash, get_device, REPO_ROOT
-
+from dataset import EUROSAT_CLASSES, get_transforms
+from utils import REPO_ROOT, get_device, get_dvc_data_hash, load_params
 
 TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
 CHAMPION_ALIAS = "champion"
@@ -150,7 +148,10 @@ def main():
     print("\n" + "=" * 68)
     print(f"{'':24}{'CANDIDATE':>12}{'CHAMPION':>12}{'DELTA':>12}")
     print("=" * 68)
-    fmt = lambda v: f"{v:>12.4f}" if v is not None else f"{'—':>12}"
+    def fmt(v):
+        """Right-aligned metric, or an em dash when there is no champion yet."""
+        return f"{v:>12.4f}" if v is not None else f"{'—':>12}"
+
     delta_acc = None if champ_acc is None else cand_acc - champ_acc
     print(f"{'accuracy':24}{fmt(cand_acc)}{fmt(champ_acc)}{fmt(delta_acc)}")
     print(f"{'ms / image':24}{fmt(cand_ms)}{fmt(champ_ms)}"

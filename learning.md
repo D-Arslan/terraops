@@ -489,3 +489,209 @@ pytest/CI de `promote.py` : mêmes seuils (`params.yaml`), même jeu figé.
 - Image API 2.53 Go : `mlflow-skinny` + flavor PyTorch seul pourrait réduire encore.
 - Pas encore de CI qui rejoue le gate/non-régression sur PR (les tests lents ~5 min →
   nightly vs bloquant à décider). Monitoring de drift en prod : non commencé.
+
+---
+
+## Sprint 4 — Monitoring, dérive et Continuous Training
+
+Objet du sprint : rendre le système capable de dire **quand il n'est plus fiable**.
+C'est le sprint qui différencie le projet, parce que c'est celui où l'on mesure au
+lieu de supposer.
+
+### Concept n°1 — Data drift vs concept drift (et lequel est détectable)
+
+Décomposition : `P(X, Y) = P(X) × P(Y|X)`.
+
+- **Data drift** (covariate shift) : `P(X)` change, `P(Y|X)` stable. Nouveau
+  capteur, autre saison, voile nuageux. « Une forêt reste une forêt » — la règle
+  n'a pas bougé, l'entrée si. Le modèle se dégrade en extrapolant hors domaine.
+- **Concept drift** : `P(Y|X)` change. Les mêmes pixels changent d'étiquette
+  (parcelle agricole urbanisée, nomenclature révisée). Même un modèle parfaitement
+  calibré sur l'ancien monde a tort.
+- **Label shift** : `P(Y)` change, `P(X|Y)` stable. Le mix de classes entrant
+  bascule. Se traite par recalibration des priors, pas par réentraînement.
+
+**Le point fondamental, et c'est LA raison d'être du sprint** : en production on
+observe `X` (les images) et `Ŷ` (les prédictions). On n'observe **pas** `Y`. Donc :
+
+| grandeur | observable en prod | détecte |
+|---|---|---|
+| `P(X)` | oui, immédiatement | data drift |
+| `P(Ŷ)`, confiance, entropie | oui | proxy de dérive |
+| `Y`, accuracy | **non** (ou tard, ou cher) | — |
+
+→ **Le data drift est détectable sans labels ; le concept drift ne l'est pas.**
+Tout le monitoring ML sérieux surveille donc un proxy observable en PARIANT qu'il
+corrèle avec une dégradation invisible. Ce pari n'est presque jamais vérifié : le
+seuil est copié d'un blog et le dashboard est cru parce qu'il est vert.
+
+Ici il est vérifiable, parce que la dérive est simulée et les labels connus.
+
+### Concept n°2 — Les tests statistiques, et pourquoi le volume les casse
+
+- **KS** : écart vertical max entre les CDF empiriques. Non paramétrique, univarié,
+  sensible au centre plus qu'aux queues. Sort une p-value.
+- **PSI** : divergence KL symétrisée sur des buckets (10 déciles). Pas de p-value,
+  seuils conventionnels 0.1 / 0.25. Avantage décisif : **la taille d'échantillon
+  n'entre pas dans la formule**.
+- **Wasserstein** : coût de transport minimal ; en 1D, l'AIRE entre les CDF (KS en
+  prend le max). Sensible à l'AMPLEUR du déplacement, pas seulement à sa
+  détectabilité. À normaliser par l'écart-type de la référence pour comparer entre
+  features.
+
+**Pourquoi les faux positifs explosent au volume** — la phrase à savoir sortir :
+
+> Un test d'hypothèse ne mesure pas « à quel point c'est différent », il mesure
+> « à quel point je suis sûr que ce n'est pas identique ».
+
+H₀ (« distributions identiques ») est **toujours fausse** entre deux échantillons
+réels. Ce n'est donc qu'une question de puissance : `D_crit ≈ c(α)·√(2/n)`.
+À n = 1 000 → 0.061 (il faut un vrai décalage). À n = 1 000 000 → 0.0019 : un écart
+de 0.2 % entre CDF déclenche l'alarme. Significatif, sans conséquence, et l'alerte
+hurle tous les jours jusqu'à ce qu'on la coupe — fatigue d'alerte.
+
+Parades appliquées : effect size plutôt que p-value (`monitor.stattest: wasserstein`),
+fenêtre **plafonnée** (`current_window: 2000`), **plancher** de refus
+(`min_current_rows: 200`), persistance sur 3 fenêtres, seuil calibré empiriquement
+par l'expérience — pas le 0.25 conventionnel.
+
+### Concept n°3 — CI/CD vs CT
+
+| | déclencheur | entrée | sortie | décideur |
+|---|---|---|---|---|
+| CI | commit | code | tests + image | tests (déterministe) |
+| CD | merge/tag | image + config | déploiement | déterministe + approbation |
+| **CT** | **la donnée** (dérive, calendrier) | données + code figé | un **candidat** | **le gate** |
+
+> **CI/CD réagit à un changement de CODE. CT réagit à un changement du MONDE.**
+
+La propriété qui n'existe dans aucun autre logiciel : **la valeur d'un artefact ML
+décroît avec le temps même à code constant**. Et : CI/CD produit un artefact
+DÉPLOYABLE, CT produit un artefact **CANDIDAT**.
+
+**Pourquoi le réentraînement automatique sans gate est dangereux** (5 arguments) :
+
+1. **Le drift peut être une PANNE, pas une évolution.** Capteur HS → images
+   corrompues → on réentraîne dessus → on apprend au modèle que la corruption est
+   normale. On blanchit la panne dans les poids, et le détecteur, recalibré sur les
+   données pourries, ne signale plus rien. Le monitoring s'auto-neutralise.
+2. **L'entraînement est stochastique.** Preuve empirique dans ce repo : 5
+   expériences Sprint 2, 0 amélioration, **3 refus du gate**. Un CT sans gate aurait
+   déployé les trois.
+3. **Boucle de rétroaction dégénérative** : chaque cycle réentraîne sur les données
+   du précédent. `gate/frozen_val.json` commité est l'ancre qui casse la boucle.
+4. **L'accuracy globale masque les régressions par classe** (`max_class_recall_drop`).
+5. **Sans gate, pas de rollback propre** — l'alias `@champion` EST la version prod.
+
+Et le point que presque personne ne dit : **un gate qui refuse ne referme pas
+l'incident.** Ça veut dire « la dérive est réelle et le réentraînement ne suffit
+pas » → escalade humaine. Le CT automatise le TRAVAIL, pas la DÉCISION.
+
+### L'expérience centrale — la courbe dérive ↔ accuracy
+
+`src/drift_experiment.py` : 4 perturbations × 8 intensités × 500 images du jeu figé.
+Baseline intensité 0 : **98.60 %** (champion gaté à 98.10 % sur les 4050 → cohérent
+au bruit d'échantillonnage près, donc baseline auditable).
+
+| perturbation | détection | effondrement | avance | verdict |
+|---|---|---|---|---|
+| voile nuageux | 0.1 | 0.2 | **+0.1** | alerte précoce |
+| saisonnier | 0.2 | 0.6 | **+0.4** | alerte précoce |
+| décalage de bandes | 0.2 | 0.6 | **+0.4** | alerte précoce |
+| **flou** | 0.6 | 0.3 | **−0.3** | **TARDIF — angle mort** |
+| tout combiné | 0.2 | 0.1 | **−0.1** | tardif (hérite du flou) |
+
+**Trois résultats, dont deux inconfortables :**
+
+1. La dérive **radiométrique** est vue tôt. Vraie marge de manœuvre.
+
+2. **Le flou est un angle mort STRUCTUREL.** L'accuracy tombe 97 → 81 → 61 % avec
+   une part en dérive à **0.00**. 11 features sur 12 décrivent la couleur, 1 la
+   texture. Une perturbation qui bouge UNE feature ne peut pas atteindre un seuil
+   sur une PART. **Aucune valeur du seuil ne corrige ça** — c'est une conséquence
+   de conception, maintenant mesurée et non plus soupçonnée.
+
+3. **Le modèle devient confiant ET faux.** Sous voile nuageux total : accuracy
+   0.098 (= hasard sur 10 classes), entropie moyenne **0.008** contre 0.021 au
+   repos, 100 % des prédictions sur une seule classe. L'entropie monte dans la zone
+   de confusion puis **redescend SOUS la baseline**.
+   → Conséquence appliquée : **l'entropie n'est PAS un déclencheur CT ici.** Une
+   alerte « confiance basse = problème » serait verte au pire moment.
+
+### Erreurs commises (les plus instructives)
+
+**1. J'ai failli publier un faux angle mort.** Premier balayage : 200 images, toutes
+les fenêtres revenaient `insufficient_data` (plancher à 200) — et mon agrégation
+traitait « pas de verdict » comme « pas de dérive ». J'allais conclure « le
+détecteur ne voit rien » alors qu'il n'avait jamais été interrogé. C'est
+exactement le mode de défaillance que le sprint combat : **un silence pris pour une
+bonne nouvelle.** Corrections : statut à trois valeurs `ok / drift /
+insufficient_data`, refus explicite au démarrage si `sample < min_current_rows`, et
+un test qui épingle qu'une fenêtre non concluante ne compte jamais comme « sans
+dérive ».
+
+**2. Deux perturbations opposées se compensent.** Le voile éclaircit, l'hiver
+assombrit : le composite est PLUS PROCHE de l'original en distance pixel moyenne
+que le nuage seul. Mon test « le composite domine ses parties » échouait à raison.
+Leçon : **une distance agrégée unique peut DIMINUER pendant que la situation
+empire.** La comparaison par feature atténue, n'élimine pas.
+
+**3. Le mauvais Postgres.** Un PostgreSQL Windows natif occupait 5432 ; le conteneur
+publiait le port mais toute connexion hôte atteignait l'AUTRE base. L'échec
+d'authentification revenait en codepage ANSI → `UnicodeDecodeError`, une exception
+qui nomme un problème d'encodage et ne dit rien de la cause. Corrigé par un port
+inhabituel + un diagnostic explicite dans `_describe_error`.
+
+### Questions recruteur — Sprint 4
+
+1. **« Data drift ou concept drift, et lequel détectez-vous ? »** → décomposition
+   `P(X)P(Y|X)`, tableau observable/non observable, « le concept drift n'est pas
+   détectable sans labels, point ».
+2. **« Votre KS alerte tous les jours sur 500k lignes, pourquoi ? »** → H₀ toujours
+   fausse + `D_crit ≈ √(2/n)`, passer à un effect size, plafonner la fenêtre.
+3. **« Le détecteur alerte avant la chute ? »** → les chiffres ci-dessus, y compris
+   le −0.3 du flou. Ne jamais présenter que les trois bons cas.
+4. **« Pourquoi ne pas déclencher sur la confiance moyenne ? »** → mesuré
+   non monotone : 0.021 → 0.145 → 0.008 pendant que l'accuracy fait 0.986 → 0.098.
+5. **« Réentraînement auto sans gate : le risque ? »** → les 5 arguments, avec le
+   3/5 refusé du Sprint 2 comme preuve.
+6. **« Prometheus ou Postgres pour le drift ? »** → Prometheus = « le service
+   va-t-il bien maintenant » (pré-agrégé, cardinalité bornée) ; Postgres = « qu'a vu
+   la prod exactement » (ligne à ligne, jointure, historique). Mettre des valeurs de
+   features en labels Prometheus = cardinalité non bornée = mort du serveur.
+7. **« Votre référence, c'est quoi et pourquoi ? »** → le split TRAIN, sans
+   augmentation, figé et commité. Une référence glissante ne détecte jamais une
+   dérive lente (grenouille bouillie). L'augmentation est un régularisateur, pas
+   une description du monde ; l'inclure élargirait la référence et aveuglerait le
+   détecteur sur la dérive radiométrique.
+
+### Test d'acceptation de bout en bout (validé)
+
+520 requêtes réelles via HTTP (`drift_traffic.py`), 0 échec :
+
+| source | n | p95 serveur | confiance | entropie | luminosité |
+|---|---|---|---|---|---|
+| `sim:baseline` | 260 | 265 ms | 0.984 | 0.019 | 0.380 |
+| `sim:cloud:0.6` | 260 | 78 ms | 0.882 | 0.129 | 0.503 |
+
+- Rapport baseline : **pas de dérive** (part 0.17).
+- Rapport nuage 0.6 : **DÉRIVE**, part 0.92, top `mean_b` (1.38).
+- Monitor : streak 1/3 → 2/3 → 3/3 puis dry-run de dispatch, avec les DEUX
+  détecteurs allumés (part 0.92 ET effondrement `SeaLake` à 0.68). Repasser sur la
+  source baseline **remet le compteur à 0**.
+
+Note d'honnêteté sur les latences : le p95 client était de 2350 ms contre 265 ms
+côté serveur — l'écart est l'encodage PNG, HTTP et le client Python, pas le modèle.
+Et les deux p95 serveur ne sont pas comparables entre eux : la machine était
+chargée pendant le premier envoi. **Comparer des latences entre deux runs sur un
+poste de dev ne prouve rien.**
+
+### Dette connue à la clôture
+
+- Angle mort du flou **non corrigé** : il faudrait des features de texture/fréquence
+  ou une dérive sur embeddings.
+- `retrain.yml` exige un runner self-hosted (MinIO et MLflow sont locaux) : la
+  boucle CT n'est pas démontrable sur un runner GitHub public.
+- `/reload` toujours manuel.
+- L'axe d'intensité est arbitraire : les avances ne se comparent pas ENTRE
+  perturbations, seulement en signe et en ordre à l'intérieur d'une perturbation.

@@ -19,3 +19,14 @@ venv/
 logs/
 *.log
 logs_*.txt
+
+# --- Sprint 4 monitoring: generated output vs anchors ---
+# COMMITTED (deliberately): monitoring/reference.json is the frozen drift
+# reference — the input-side twin of gate/frozen_val.json. It must be versioned,
+# because every past drift verdict is only interpretable against the exact
+# reference that produced it.
+# NOT committed: everything below is regenerated on every run.
+# timestamped Evidently HTML + JSON, one pair per report run
+monitoring/reports/
+# CT streak/cooldown state: runtime, machine-local
+monitoring/trigger_state.json

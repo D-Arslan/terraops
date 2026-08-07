@@ -6,7 +6,6 @@ from torchvision import datasets, transforms
 
 from preprocessing import build_eval_transform
 
-
 EUROSAT_CLASSES = [
     "AnnualCrop", "Forest", "HerbaceousVegetation", "Highway",
     "Industrial", "Pasture", "PermanentCrop", "Residential",

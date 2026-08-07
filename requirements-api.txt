@@ -22,3 +22,15 @@ mlflow==3.4.0
 fastapi==0.139.2
 uvicorn[standard]==0.51.0
 python-multipart==0.0.32
+
+# Sprint 4 — observability.
+# psycopg2-BINARY (not psycopg2): ships a prebuilt wheel, so the API image needs
+# no libpq-dev / gcc layer. Prediction logging is append-only and low-volume;
+# the binary build's caveats (no custom libpq, threading edge cases at extreme
+# scale) do not apply here, and the image stays slim.
+psycopg2-binary==2.9.11
+
+# Prometheus exposition on /metrics. In-process counters/histograms only — no
+# push gateway, no sidecar: the API is scraped, which is the pull model
+# Prometheus is designed around.
+prometheus-client==0.25.0

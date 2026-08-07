@@ -26,7 +26,6 @@ if str(SRC) not in sys.path:
 
 from utils import load_params  # noqa: E402
 
-
 # --- Config --------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
@@ -103,6 +102,7 @@ def champion(require_mlflow, tracking_uri, params):
     """
     import mlflow
     from mlflow import MlflowClient
+
     from utils import get_device
 
     mlflow.set_tracking_uri(tracking_uri)
@@ -132,8 +132,8 @@ def champion_scores(champion, frozen, params, data_cfg):
     from torch.utils.data import DataLoader, Subset
     from torchvision import datasets
 
-    from preprocessing import build_eval_transform
     from dataset import EUROSAT_CLASSES
+    from preprocessing import build_eval_transform
 
     # A transformed view of the data (shared eval transform — the serving path).
     full = datasets.EuroSAT(

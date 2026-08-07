@@ -13,8 +13,7 @@ from PIL import Image
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 
-from preprocessing import (build_eval_transform, decode_image, preprocess,
-                           preprocess_batch)
+from preprocessing import build_eval_transform, decode_image, preprocess, preprocess_batch
 
 
 def _png_bytes(img: Image.Image) -> bytes:

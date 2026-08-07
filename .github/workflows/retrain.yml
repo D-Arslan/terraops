@@ -1,0 +1,155 @@
+# Continuous Training — the loop that reacts to DATA, not to code.
+#
+# CI reacts to a commit. CT reacts to the world: drift_monitor.py detects that
+# production inputs no longer resemble the training reference and dispatches this
+# workflow. That is the only structural difference, and it is the whole point —
+# a model decays with no code change, so something has to be triggered by
+# something other than a push.
+#
+# WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO
+# -------------------------------------------
+# It does not deploy. It produces a CHALLENGER and submits it to the promotion
+# gate, which can refuse. Automating the retraining without the gate would mean:
+#   - a broken sensor's corrupted data gets learned as "normal", laundering the
+#     fault into the weights and blinding the detector that found it;
+#   - a bad seed ships to production (the sprint-2 campaign ran 5 experiments and
+#     the gate refused 3 of them — a gateless CT would have deployed all three);
+#   - per-class regressions hide behind a flat global accuracy.
+# The gate's refusal is therefore a SUCCESSFUL outcome of this pipeline, and it
+# fails the job on purpose: red here means "drift is real and retraining did not
+# fix it", which needs a human, not a retry.
+#
+# RUNNER REQUIREMENT — stated plainly rather than pretended away
+# --------------------------------------------------------------
+# This job needs the TerraOps stack (MinIO for DVC remote, MLflow tracking +
+# registry). Both run on the project owner's machine, so it targets a
+# self-hosted runner. On a GitHub-hosted runner `dvc pull` cannot reach a
+# laptop-local MinIO and this workflow cannot run — that limitation is in the
+# README's honesty section, not hidden behind a green badge.
+name: retrain
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this retrain was triggered (drift_monitor fills it in)"
+        required: false
+        default: "manual dispatch"
+      allow_dirty:
+        description: "Allow gating a run whose git tree was dirty (debug only)"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  # Two concurrent retrains would race on the registry and on dvc.lock. Not
+  # cancel-in-progress: an interrupted `dvc repro` leaves a half-written cache.
+  group: terraops-retrain
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: self-hosted
+    # CPU training: hours, not minutes. The champion recipe is 25 epochs at
+    # ~15 min/epoch = ~6h15 of training BEFORE the gate scores 4050 frozen images
+    # against two models. 360 would time out mid-run and leave a half-written DVC
+    # cache. Self-hosted runners are not bound by the 6-hour hosted-runner cap.
+    # Early stopping (patience 5) usually ends it sooner; the timeout sizes the
+    # worst case, not the expected one.
+    timeout-minutes: 720
+    env:
+      MLFLOW_TRACKING_URI: http://localhost:5000
+      TERRAOPS_DB_URI: postgresql://mlflow:mlflow@localhost:5432/mlflow
+      PYTHONPATH: src
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # lineage tags need real history, not a shallow clone
+
+      - name: Record the trigger
+        run: |
+          echo "### CT run" >> "$GITHUB_STEP_SUMMARY"
+          echo "- reason: ${{ inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- commit: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check the stack is reachable
+        # Fail fast with a readable message instead of a confusing DVC or MLflow
+        # traceback forty minutes into the job.
+        run: |
+          python - <<'PY'
+          import sys, urllib.request
+          try:
+              with urllib.request.urlopen("http://localhost:5000/health", timeout=5) as r:
+                  sys.exit(0 if r.status == 200 else 1)
+          except Exception as exc:
+              sys.exit(f"MLflow unreachable: {exc}. Start the stack: docker compose up -d")
+          PY
+
+      - name: Pull data
+        run: dvc pull
+
+      - name: Reproduce the pipeline (prepare -> train -> evaluate)
+        run: dvc repro
+
+      - name: Resolve the run produced by this commit
+        id: run
+        # By git_commit tag, not "the latest run": on a shared tracking server a
+        # concurrent or leftover run can be more recent, and the gate would then
+        # evaluate a model nobody asked about.
+        run: |
+          RUN_ID=$(python src/resolve_run.py ${{ inputs.allow_dirty && '--allow-dirty' || '' }})
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "- challenger run: \`$RUN_ID\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Promotion gate (champion vs challenger on the frozen set)
+        id: gate
+        run: python src/promote.py --run-id "${{ steps.run.outputs.run_id }}"
+
+      - name: Serve the new champion
+        # Only reached when the gate accepted. The API re-resolves @champion in
+        # process — a promotion is a governance action, not a redeploy.
+        run: |
+          curl -fsS -X POST http://localhost:8000/reload || \
+            echo "::warning::API reload failed — the registry is updated, the served model is not"
+          echo "- gate: **ACCEPTED**, alias moved, API reloaded" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the updated lockfile
+        # The retrain changed dvc.lock and metrics. Opening a PR rather than
+        # pushing to main keeps the human in the loop for the REPO state, even
+        # though the model promotion itself was automated and gated.
+        if: success()
+        run: |
+          BRANCH="ct/retrain-$(date -u +%Y%m%dT%H%M%SZ)"
+          git config user.name "terraops-ct"
+          git config user.email "ct@terraops.local"
+          git checkout -b "$BRANCH"
+          git add dvc.lock metrics
+          git commit -m "CT: retrain after drift (${{ inputs.reason }})" || exit 0
+          git push origin "$BRANCH"
+          gh pr create --title "CT retrain: ${{ inputs.reason }}" \
+            --body "Automated retrain. Gate ACCEPTED challenger \
+          \`${{ steps.run.outputs.run_id }}\`. Review the metrics diff before merging."
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Explain a refusal
+        if: failure() && steps.gate.outcome == 'failure'
+        run: |
+          {
+            echo "- gate: **REFUSED** — the challenger did not beat the champion"
+            echo ""
+            echo "This is a correct outcome, not a bug. The champion stays in place."
+            echo "The drift that triggered this run is UNRESOLVED: retraining on"
+            echo "current data did not produce a better model, so the cause is"
+            echo "probably not a stale model. Check for a sensor fault, an"
+            echo "ingestion bug, or a genuinely new domain before re-triggering."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1

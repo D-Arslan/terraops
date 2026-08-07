@@ -4,19 +4,18 @@ Reads hyperparameters from params.yaml and the model produced by the 'train'
 stage. Writes a machine-readable metrics.json (tracked by DVC) plus plots.
 """
 
-import os
 import json
+import os
 
-import torch
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
+import torch
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 
-from dataset import load_eurosat, EUROSAT_CLASSES
+from dataset import EUROSAT_CLASSES, load_eurosat
 from model import build_model
-from utils import load_params, set_seed, get_device
-
+from utils import get_device, load_params, set_seed
 
 # Pipeline paths — must match the deps/outs declared for this stage in dvc.yaml.
 MODEL_PATH = "models/best_model.pth"
@@ -79,7 +78,7 @@ def plot_misclassified(images, y_true, y_pred, probs, output_dir, mean, std, n=9
     selected = misclassified_idx[sorted_idx[:n]]
 
     fig, axes = plt.subplots(3, 3, figsize=(12, 12))
-    for ax, idx in zip(axes.flat, selected):
+    for ax, idx in zip(axes.flat, selected, strict=False):
         img = denormalize(images[idx], mean, std).permute(1, 2, 0).numpy()
         img = np.clip(img, 0, 1)
         ax.imshow(img)

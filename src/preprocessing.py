@@ -34,7 +34,6 @@ from PIL import Image, ImageOps
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 
-
 # Anything a caller may legitimately hand us as "an image to classify".
 ImageSource = Union[bytes, bytearray, str, Path, Image.Image]
 

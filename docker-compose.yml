@@ -44,6 +44,18 @@ services:
       POSTGRES_USER: mlflow
       POSTGRES_PASSWORD: mlflow          # dev credentials only
       POSTGRES_DB: mlflow
+    ports:
+      # Published because the monitoring CLI runs on the HOST: drift_report.py
+      # and drift_monitor.py read monitoring.predictions directly. Without this
+      # the documented workflow only works from inside the compose network.
+      #
+      # 55433, NOT 5432: a native PostgreSQL install owns 5432 on many dev
+      # machines (it did on this one). The container would appear to publish the
+      # port while every host connection silently reached the OTHER database,
+      # failing authentication — and libpq's error message came back in the
+      # Windows ANSI codepage, surfacing as a UnicodeDecodeError that says
+      # nothing about the real cause. An unusual port removes the whole class.
+      - "55433:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data # run history survives restarts
     healthcheck:
@@ -97,9 +109,37 @@ services:
       - "8000:8000"                      # http://localhost:8000 (/docs for Swagger)
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Sprint 4: prediction log. Same Postgres instance, DEDICATED SCHEMA
+      # (monitoring.predictions) — a separate database would require re-running
+      # initdb, i.e. `down -v`, i.e. destroying the MLflow history. The schema
+      # gives the namespace separation without touching existing state.
+      TERRAOPS_DB_URI: postgresql://mlflow:mlflow@postgres:5432/mlflow
     depends_on:
       mlflow:
         condition: service_healthy       # wait for the registry to actually answer
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Prometheus: scrapes the API's /metrics. Service-level observability only —
+  # latency, throughput, class mix, log health. Data-drift detection is NOT here
+  # (it needs a reference distribution and row-level history: Evidently over the
+  # Postgres prediction log).
+  prometheus:
+    image: prom/prometheus:latest      # TODO: pin a version tag for full repro
+    container_name: terraops-prometheus
+    ports:
+      - "9090:9090"                     # http://localhost:9090
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus     # TSDB survives restarts
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    depends_on:
+      - api
     restart: unless-stopped
 
   # Streamlit UI: a THIN CLIENT of the API (no model, no torch in this image).
@@ -119,3 +159,4 @@ services:
 volumes:
   minio-data:
   pg-data:
+  prometheus-data:

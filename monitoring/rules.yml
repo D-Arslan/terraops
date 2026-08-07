@@ -1,0 +1,83 @@
+# Alerting rules — the SERVICE-level half of the monitoring story.
+#
+# Scope discipline: these rules cover what Prometheus can genuinely see —
+# latency, error rate, availability, and the two model-side proxies (predicted
+# class mix, prediction entropy). DATA DRIFT is deliberately absent: it requires
+# comparing a window against a fixed reference distribution, which is Evidently's
+# job over the Postgres prediction log, not a PromQL expression over counters.
+#
+# Every rule below carries a `for:` clause. A threshold crossed for one scrape is
+# noise; the persistence requirement is the cheapest and most effective defence
+# against alert fatigue — the same reasoning that makes a drift alert require
+# several consecutive windows.
+groups:
+  - name: terraops-serving
+    rules:
+      # p95 latency, computed from the histogram. The 0.4 s threshold is the same
+      # budget pinned in params.yaml (nonreg.max_latency_ms) and it sits on a
+      # bucket EDGE, so the quantile is not an interpolation artefact.
+      - alert: HighPredictionLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, endpoint) (rate(terraops_prediction_latency_seconds_bucket[5m]))
+          ) > 0.4
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 inference latency above the 400 ms budget on {{ $labels.endpoint }}"
+          description: "Same budget as the non-regression test; sustained 10 min."
+
+      # The API answers but has no champion loaded — a 200 on /health with a
+      # useless service. This is the exact failure the degraded-startup mode
+      # creates on purpose, so it must be alerted rather than tolerated silently.
+      - alert: NoChampionServed
+        expr: absent(terraops_model_loaded) or max(terraops_model_loaded) < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No champion model loaded — /predict is returning 503"
+
+      # Monitoring losing rows invalidates every drift conclusion drawn over that
+      # period. Alerting on the loss is what keeps a green drift report honest.
+      - alert: PredictionLogDroppingRows
+        expr: increase(terraops_prediction_log_rows{state="dropped"}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prediction log dropped rows — drift reports for this window are incomplete"
+
+  - name: terraops-model-signals
+    rules:
+      # PREDICTION drift, not data drift: the model has become less sure without
+      # anyone touching it. A leading indicator, worth a look, never worth an
+      # automatic retrain on its own — see the CT gate.
+      - alert: RisingPredictionEntropy
+        expr: |
+          (
+            sum(rate(terraops_prediction_entropy_sum[30m]))
+            / sum(rate(terraops_prediction_entropy_count[30m]))
+          ) > 0.35
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mean prediction entropy sustained above 0.35"
+          description: >-
+            The inputs may still look familiar while the model has stopped being
+            confident. Cross-check against the Evidently data-drift report before
+            concluding anything.
+
+      # A class that stops being predicted at all is either a real change in the
+      # incoming mix or a broken model — both need a human.
+      - alert: PredictedClassDisappeared
+        expr: |
+          count(count by (predicted_class) (terraops_predictions_total)) < 10
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Fewer than 10 distinct classes predicted over the last hour"

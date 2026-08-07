@@ -12,28 +12,34 @@ Every execution becomes one MLflow run:
 """
 
 import os
-import time
 import tempfile
+import time
 
+import matplotlib
+import mlflow
+import mlflow.pytorch
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 
-import mlflow
-import mlflow.pytorch
-import matplotlib
 matplotlib.use("Agg")  # no display needed; we only save PNGs for MLflow
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
 
-from dataset import load_eurosat, EUROSAT_CLASSES
+from dataset import EUROSAT_CLASSES, load_eurosat
 from model import build_model
-from utils import (load_params, set_seed, setup_logging, get_device,
-                   get_git_commit, get_dvc_data_hash, flatten_params)
-
+from utils import (
+    flatten_params,
+    get_device,
+    get_dvc_data_hash,
+    get_git_commit,
+    load_params,
+    set_seed,
+    setup_logging,
+)
 
 # Pipeline output path — must match the 'outs' declared for this stage in dvc.yaml.
 MODEL_PATH = "models/best_model.pth"
@@ -228,7 +234,9 @@ def main():
             scheduler.step(val_loss)
             current_lr = optimizer.param_groups[0]["lr"]
 
-            for key, value in zip(history, (train_loss, train_acc, val_loss, val_acc)):
+            for key, value in zip(history,
+                                  (train_loss, train_acc, val_loss, val_acc),
+                                  strict=True):
                 history[key].append(value)
             # step=epoch gives MLflow the x-axis for its metric charts
             mlflow.log_metrics({

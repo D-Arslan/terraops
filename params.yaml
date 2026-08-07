@@ -31,8 +31,14 @@ data:
     jitter_saturation: 0.1
 
 # --- model: consumed by BOTH train & evaluate (identical build) ---------------
+# RESTORED to the champion's recipe (2026-08-07), because params.yaml is now what
+# the CT loop retrains FROM. A retrain is meant to answer "does the same recipe do
+# better on newer data?" — leaving the last experiment's architecture here would
+# have made every automated retrain silently change TWO variables at once (data
+# AND architecture) and compare a MobileNet challenger against a ResNet-18
+# champion. Changing architecture goes back to being an explicit experiment.
 model:
-  arch: mobilenet_v3_small    # exp 5: efficiency challenger (baseline: resnet18)
+  arch: resnet18              # resnet18 | mobilenet_v3_small
   num_classes: 10
   pretrained: true            # ImageNet weights
   dropout: 0.3                # head dropout
@@ -40,11 +46,18 @@ model:
 
 # --- train stage --------------------------------------------------------------
 train:
-  epochs: 6                   # experiment budget (CPU) — identical for exps 2-5
-  lr: 0.001                   # back to baseline — exp 3 tests augmentation, not lr
+  # Also restored to the champion's values. The 6-epoch / patience-3 budget was a
+  # COMPARISON budget for the sprint-2 campaign (5 experiments on CPU), not the
+  # recipe that produced the champion. A CT retrain that used it would be
+  # under-trained by construction and would lose to the champion at the gate for a
+  # reason having nothing to do with the data — a rejection that teaches nothing.
+  # Cost of the honest value: ~15 min/epoch on CPU, so a full CT run is a ~6 h job
+  # (early stopping usually cuts it short). retrain.yml's timeout is sized for it.
+  epochs: 25
+  lr: 0.001
   batch_size: 64
   weight_decay: 0.0001        # Adam L2 (was hardcoded 1e-4)
-  patience: 3                 # early stopping on val loss
+  patience: 5                 # early stopping on val loss
   scheduler_factor: 0.1       # ReduceLROnPlateau
   scheduler_patience: 3
 
@@ -64,6 +77,108 @@ promote:
                               # "greater by a hair"
   max_class_recall_drop: 0.03 # no single class may lose > 3 pts of recall,
                               # even if global accuracy improves
+
+# --- drift monitoring (src/drift_reference.py, src/drift_report.py) -----------
+monitor:
+  reference_path: monitoring/reference.json   # COMMITTED, like gate/frozen_val.json:
+                                # the reference is an anchor, not a moving average
+  reference_sample: 3000        # images sampled from the TRAIN split. Enough for
+                                # stable per-feature distributions, small enough
+                                # that rebuilding it is a 2-minute job
+  current_window: 2000          # rows pulled from the prediction log per report.
+                                # CAPPED ON PURPOSE: with an uncapped window, a
+                                # p-value test would reject H0 on volume alone
+  min_current_rows: 200         # below this, the report REFUSES to conclude
+                                # rather than emitting a noisy verdict
+  stattest: wasserstein         # effect size, not p-value — see learning.md.
+                                # KS would fire on any large window; Wasserstein
+                                # answers "by how much", which is the question
+  stattest_threshold: 0.1       # normalized Wasserstein distance (in reference
+                                # std units) above which a FEATURE is in drift
+  drift_share_threshold: 0.5    # fraction of drifted features above which the
+                                # DATASET is declared in drift. A single feature
+                                # moving is not an incident; half of them is
+  report_dir: monitoring/reports
+
+  # --- CT trigger (src/drift_monitor.py) --------------------------------------
+  # Turning a drift verdict into a retraining run. Every number here exists to
+  # STOP the pipeline from firing, not to make it fire: an automated retrain is
+  # expensive, and a retrain triggered by noise is worse than no retrain at all.
+  trigger:
+    consecutive_windows: 3      # a threshold crossed once is noise; crossed on
+                                # three consecutive reports it is a regime. Same
+                                # reasoning as the `for:` clause on every
+                                # Prometheus alert
+    cooldown_minutes: 720       # at most one retrain per 12 h, whatever happens.
+                                # Without it, a drift that persists (because the
+                                # cause is a broken sensor, not a stale model)
+                                # would loop forever
+    state_path: monitoring/trigger_state.json
+    workflow: retrain.yml       # GitHub Actions workflow_dispatch target
+    ref: main
+    # Second detector, OR-ed with the drift share. It is a CATASTROPHE BACKSTOP,
+    # not an early warning, and the measurement says so: at intensity 1.0 the
+    # cloud veil drives 100% of predictions into a single class (2 classes ever
+    # predicted, mean entropy 0.008 — the model is CERTAIN and 9.8% accurate).
+    # Under blur, the majority share only reaches 0.61 at intensity 0.6, where
+    # accuracy is already 27%: it does NOT rescue the blur blind spot. Keeping it
+    # anyway because it is the one signal that still moves when the model has
+    # collapsed onto one class, which the drift share can miss entirely.
+    # Baseline on balanced traffic is ~0.12, so 0.60 is far above normal class
+    # imbalance and will not fire on a client sending mostly one land type.
+    majority_class_share_max: 0.60   # one class taking >60% of predictions
+    # Entropy is deliberately NOT a trigger: the experiment showed it rising and
+    # then FALLING back below baseline as the model became confidently wrong.
+    # A non-monotonic signal cannot arm anything.
+
+# --- drift simulator (src/drift_sim.py) ---------------------------------------
+# Amplitudes reached at intensity = 1.0. Intensity 0 is the IDENTITY for every
+# perturbation, which is what makes the drift curve start at the true baseline
+# accuracy instead of at "baseline plus a bit of noise".
+#
+# These numbers are the experiment's independent variable, so they belong here
+# and not in the code — exactly like every hyperparameter. Changing one changes
+# what the drift curve means, and params.yaml is what records that.
+drift_sim:
+  seed: 1234                    # per-image RNG is derived from this + the index,
+                                # so a rerun of the sweep is bit-identical
+  cloud:                        # cloud veil: partial, low-frequency, whitening
+    max_opacity: 0.75           # peak alpha of the veil at intensity 1
+    blob_scale: 8               # noise grid side before upsampling (small = big blobs)
+    max_blur: 2.0               # haze softens edges as well as whitening them
+  seasonal:                     # winter/summer radiometry
+    max_brightness_gain: 0.45   # +/- relative luminance change
+    max_saturation_drop: 0.70   # winter scenes desaturate strongly
+    direction: winter           # winter (darker, washed out) | summer (brighter, vivid)
+  blur:                         # defocus / lower-resolution sensor
+    max_radius: 3.0             # gaussian sigma in pixels at native resolution
+  band_shift:                   # sensor calibration drift between channels
+    max_gain: 0.35              # relative per-channel gain at intensity 1
+    channel_weights: [1.0, -0.3, -0.6]  # R up, G slightly down, B down: the
+                                # asymmetry is what a real calibration drift
+                                # looks like — a uniform gain is just exposure
+
+# --- drift experiment (src/drift_experiment.py) -------------------------------
+# The sprint's central measurement: does the detector fire BEFORE the model
+# breaks? Run on the FROZEN gate set, so the intensity-0 accuracy is directly
+# comparable to the number the champion was promoted with.
+experiment:
+  sample: 500                   # images drawn from the frozen set. 500 x 5 kinds
+                                # x 8 intensities = 20k CPU forward passes, which
+                                # is the honest limit of a laptop-sized budget.
+                                # The +/- on an accuracy measured over 500 images
+                                # is ~2 pts, so only drops larger than that are
+                                # read as signal (see learning.md)
+  intensities: [0.0, 0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1.0]
+                                # denser at the low end: the interesting question
+                                # (who fires first) lives near the onset, not at
+                                # the saturated top of the range
+  batch_size: 64
+  kinds: [cloud, seasonal, blur, band_shift, all]
+  accuracy_drop_tolerance: 0.05 # accuracy is "collapsed" once it falls 5 pts
+                                # below the intensity-0 baseline — comfortably
+                                # above the sampling noise of a 500-image sample
+  mlflow_experiment: terraops-drift   # the sweep is a tracked run like any other
 
 # --- model non-regression tests (tests/test_model_regression.py) --------------
 # Thresholds for the pytest safety net that replays the gate's spirit in CI:

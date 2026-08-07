@@ -1,0 +1,32 @@
+# Prometheus scrape configuration for TerraOps.
+#
+# Scrape interval: 15 s. The service is a single CPU-bound API with a handful of
+# low-cardinality series — 15 s gives a readable latency graph without the
+# storage cost of a 5 s interval, and it is short enough that a p95 breach is
+# visible within a minute.
+#
+# Note that Prometheus scrapes the API by its COMPOSE SERVICE NAME (api:8000),
+# not localhost: inside the compose network that is the address that resolves.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: terraops
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  # The serving API — the only source of ML metrics.
+  - job_name: terraops-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: serving
+
+  # Prometheus scraping itself: cheap, and it makes "is the monitoring alive?"
+  # answerable from within the monitoring stack rather than by SSH.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

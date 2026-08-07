@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import random_split
 from torchvision import datasets
 
-from utils import load_params, get_dvc_data_hash, get_git_commit, REPO_ROOT
+from utils import REPO_ROOT, get_dvc_data_hash, get_git_commit, load_params
 
 
 def main():

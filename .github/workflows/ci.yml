@@ -1,0 +1,108 @@
+# CI — reacts to CODE. (The loop that reacts to DATA is retrain.yml.)
+#
+# Runs on any GitHub-hosted runner: nothing here needs the MLflow stack or the
+# DVC remote. That is a deliberate constraint, not a happy accident — the tests
+# that DO need infrastructure (model non-regression on the frozen set) skip
+# themselves when it is absent, so CI stays green and honest instead of being
+# either red-by-default or quietly deleted.
+#
+# The four gates, cheapest first, so a lint error does not cost a Docker build:
+#   1. ruff       — style and dead code
+#   2. pytest     — unit tests (preprocessing, features, drift machinery, API
+#                   contract in degraded mode); the champion non-regression
+#                   tests auto-skip here and are reported as such
+#   3. docker build — the serving image actually builds
+#   4. smoke test — the built container boots WITH NO REGISTRY and honours the
+#                   degraded contract. This is the step that would have caught
+#                   a missing runtime dependency, which no unit test can.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: src
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        # requirements-api.txt + the monitoring/test extras. The full
+        # requirements.txt would drag in dvc[s3] and CUDA-free torch anyway, so
+        # the API file plus what tests need is the smaller honest set.
+        run: |
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            -r requirements-api.txt
+          pip install pytest==9.1.1 httpx==0.28.1 ruff==0.16.2 \
+            pandas==2.3.3 evidently==0.7.21 matplotlib==3.10.8
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Unit tests
+        # -rs lists the skipped tests in the log: a suite that silently skips its
+        # safety net looks identical to one that ran it.
+        run: pytest -q -rs
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the serving image
+        run: docker build -f Dockerfile.api -t terraops-api:ci .
+
+      - name: Smoke test the container in degraded mode
+        # No MLflow, no Postgres: the API must still boot and honour its contract
+        # (200 on /health, 503 on /predict, scrapable /metrics). Exactly the
+        # docker-compose start-order case, verified rather than assumed.
+        run: |
+          docker run -d --name terraops-api-ci -p 8000:8000 \
+            -e MLFLOW_TRACKING_URI=http://127.0.0.1:9999 \
+            terraops-api:ci
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health > /dev/null 2>&1; then break; fi
+            sleep 2
+          done
+
+          echo "--- /health must be 200 with model_loaded=false ---"
+          curl -fsS http://localhost:8000/health | tee /tmp/health.json
+          grep -q '"model_loaded":false' /tmp/health.json
+
+          echo "--- /predict must be 503, not 500 ---"
+          echo -n "not-an-image" > /tmp/x.png
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -F "file=@/tmp/x.png" http://localhost:8000/predict)
+          test "$code" = "503" || { echo "expected 503, got $code"; exit 1; }
+
+          echo "--- /metrics must be scrapable even with no model ---"
+          curl -fsS http://localhost:8000/metrics | grep -q terraops_predictions_total
+
+          echo "--- monitoring must report itself down, not lie ---"
+          curl -fsS http://localhost:8000/monitoring/status | grep -q '"log_ready":false'
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs terraops-api-ci || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f terraops-api-ci || true

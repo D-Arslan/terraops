@@ -1,16 +1,15 @@
 """Utility functions for reproducibility, logging, and lineage."""
 
+import logging
 import os
 import random
-import logging
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
-import yaml
 import numpy as np
 import torch
-
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

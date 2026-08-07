@@ -55,3 +55,38 @@ def test_model_info_returns_503_when_no_model(degraded_client):
 
 def test_reload_returns_503_when_registry_down(degraded_client):
     assert degraded_client.post("/reload").status_code == 503
+
+
+# --- Sprint 4: the observability endpoints must survive degraded mode ----------
+# A monitoring surface that only works when everything else works is useless
+# precisely when it is needed, so both endpoints are asserted with NO model and
+# NO database.
+
+def test_metrics_endpoint_is_scrapable_without_a_model(degraded_client):
+    r = degraded_client.get("/metrics")
+    assert r.status_code == 200
+    assert "text/plain" in r.headers["content-type"]
+    body = r.text
+    # Metric families are declared at import time, so a scraper gets a valid
+    # (empty) exposition instead of a 500 while the API is still degraded.
+    assert "terraops_predictions_total" in body
+    assert "terraops_prediction_latency_seconds" in body
+    assert "terraops_prediction_log_queue_depth" in body
+
+
+def test_failed_predictions_are_counted_as_unavailable(degraded_client):
+    """A 503 must land in the 'unavailable' bucket, not be silently uncounted."""
+    degraded_client.post("/predict",
+                         files={"file": ("t.png", _png_bytes(), "image/png")})
+    body = degraded_client.get("/metrics").text
+    assert 'terraops_requests_total{endpoint="/predict",outcome="unavailable"}' in body
+
+
+def test_monitoring_status_reports_the_log_as_not_ready(degraded_client):
+    """No Postgres in unit tests -> the log must report itself down, not lie."""
+    r = degraded_client.get("/monitoring/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["log_ready"] is False
+    assert body["last_error"]                # the reason is surfaced, not swallowed
+    assert body["rows_written"] == 0

@@ -16,24 +16,34 @@ Startup is GRACEFULLY DEGRADED: if the registry is unreachable or no champion
 exists yet, the API still boots. /health reports not-ready and /predict returns
 503 until a model is loaded (via startup retry or POST /reload). This survives
 docker-compose start ordering, where the API may boot before MLflow is ready.
+
+Sprint 4 adds OBSERVABILITY, under the same degraded-mode rule: every served
+prediction is recorded (input statistics, predicted class, confidence, entropy,
+latency, serving model version) through a non-blocking queue. A dead monitoring
+database slows nothing and fails nothing — it only costs rows, and the drops are
+counted rather than hidden.
 """
 
 import os
 import threading
 import time
+from contextlib import contextmanager
 from typing import Optional
 
+import mlflow
 import torch
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.responses import Response
+from mlflow import MlflowClient
+from PIL import Image
 from pydantic import BaseModel
 
-import mlflow
-from mlflow import MlflowClient
-
+import metrics
 from dataset import EUROSAT_CLASSES
-from preprocessing import preprocess_batch
-from utils import load_params, get_device
-
+from image_features import extract_features, prediction_entropy
+from prediction_log import PredictionLogger, build_row
+from preprocessing import decode_image, preprocess_batch
+from utils import get_device, load_params
 
 PARAMS = load_params()
 DATA_CFG = PARAMS["data"]
@@ -86,6 +96,9 @@ class ChampionState:
             self.model = model
             self.version = target
             self.loaded_at = time.time()
+            # Dashboards must follow a hot-swap without a restart, so the gauge
+            # is updated where the swap happens, not at startup only.
+            metrics.set_model_version(target)
             return {"reloaded": True, "version": target, "previous_version": previous}
 
     def require(self) -> torch.nn.Module:
@@ -101,6 +114,7 @@ class ChampionState:
 
 
 state = ChampionState()
+predictions_log = PredictionLogger()
 
 app = FastAPI(
     title="TerraOps EuroSAT API",
@@ -118,6 +132,18 @@ def _startup():
     except Exception as exc:  # registry down, no champion yet, etc.
         print(f"[startup] no model loaded ({type(exc).__name__}: {exc}). "
               f"Serving in degraded mode; POST /reload once a champion exists.")
+
+    # Same policy for the prediction log: start() never raises, and the writer
+    # thread reconnects on its own if Postgres is not up yet.
+    predictions_log.start()
+    print(f"[startup] prediction log ready={predictions_log.ready} "
+          f"({predictions_log.last_error or 'connected'})")
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    """Flush queued prediction records so a clean stop does not lose the tail."""
+    predictions_log.stop()
 
 
 # --- Response schemas --------------------------------------------------------
@@ -159,6 +185,16 @@ class ReloadResult(BaseModel):
     previous_version: Optional[str]
 
 
+class MonitoringStatus(BaseModel):
+    """Health of the observability path itself — 'is my monitoring monitoring?'."""
+    log_ready: bool
+    rows_written: int
+    rows_dropped: int          # queue saturation or DB down too long
+    flush_failures: int
+    queue_depth: int
+    last_error: Optional[str]
+
+
 # --- Inference helper --------------------------------------------------------
 
 @torch.no_grad()
@@ -174,9 +210,91 @@ def _to_prediction(probs_row: torch.Tensor) -> Prediction:
         predicted_class=EUROSAT_CLASSES[top],
         confidence=round(float(probs_row[top]), 4),
         probabilities={cls: round(float(p), 4)
-                       for cls, p in zip(EUROSAT_CLASSES, probs_row)},
+                       for cls, p in zip(EUROSAT_CLASSES, probs_row, strict=True)},
         model_version=state.version,
     )
+
+
+def _decode_all(raws: list[bytes]) -> list[Image.Image]:
+    """Bytes -> canonical RGB PIL images, decoded ONCE per request.
+
+    Decoding here (instead of letting preprocess_batch do it internally) is what
+    lets monitoring features and the model tensor come from the exact same
+    decoded pixels. Handing the PIL objects on to preprocess_batch keeps the
+    shared-contract guarantee intact — decode_image is idempotent on a PIL
+    input, so the serving path is unchanged, not merely equivalent.
+    """
+    try:
+        return [decode_image(raw) for raw in raws]
+    except Exception as exc:
+        raise HTTPException(status_code=400,
+                            detail=f"Cannot decode image: {exc}") from exc
+
+
+@contextmanager
+def _counted(endpoint: str):
+    """Count a request's OUTCOME, mapping HTTP status to a bounded label set.
+
+    Separating client_error (bad upload) from unavailable (no champion loaded)
+    matters operationally: one is the caller's problem, the other is ours, and a
+    single `errors_total` would hide a degraded API behind users sending junk.
+    """
+    try:
+        yield
+    except HTTPException as exc:
+        outcome = "unavailable" if exc.status_code == 503 else "client_error"
+        metrics.observe_request(endpoint, outcome)
+        raise
+    except Exception:
+        metrics.observe_request(endpoint, "server_error")
+        raise
+    else:
+        metrics.observe_request(endpoint, "success")
+
+
+def _record(images: list[Image.Image], raws: list[bytes],
+            predictions: list[Prediction], *, endpoint: str,
+            source: Optional[str], elapsed_ms: float) -> None:
+    """Enqueue one monitoring row per image. Best-effort: never fails a request.
+
+    Latency is charged per image (total / n) so /predict and /predict/batch feed
+    the SAME distribution — mixing a 32-image batch's wall time with a single
+    image's would make the p95 a function of client batching habits rather than
+    of the service.
+    """
+    n = max(len(images), 1)
+    per_image_ms = elapsed_ms / n
+    for img, raw, pred in zip(images, raws, predictions, strict=True):
+        entropy = prediction_entropy(pred.probabilities)
+        # Prometheus first and outside the try: an in-memory counter cannot fail,
+        # and the live signal must not be lost because feature extraction did.
+        metrics.observe_prediction(
+            endpoint=endpoint,
+            predicted_class=pred.predicted_class,
+            model_version=state.version or "unknown",
+            confidence=pred.confidence,
+            entropy=entropy,
+            latency_seconds=per_image_ms / 1000.0,
+        )
+        try:
+            features = extract_features(img, DATA_CFG)
+            row = build_row(
+                model_version=state.version or "unknown",
+                endpoint=endpoint,
+                source=source,
+                predicted_class=pred.predicted_class,
+                confidence=pred.confidence,
+                entropy=entropy,
+                latency_ms=per_image_ms,
+                batch_size=n,
+                n_bytes=len(raw),
+                width=img.width,
+                height=img.height,
+                features=features,
+            )
+            predictions_log.log(row)
+        except Exception as exc:  # feature extraction must never break serving
+            print(f"[monitoring] row skipped ({type(exc).__name__}: {exc})")
 
 
 # --- Endpoints ---------------------------------------------------------------
@@ -210,35 +328,86 @@ def model_info():
 
 
 @app.post("/predict", response_model=Prediction)
-async def predict(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...),
+                  x_terraops_source: Optional[str] = Header(default=None)):
     """One image -> class + full probability vector + serving model version.
 
-    Bytes go straight into the shared preprocessing module — the API never decodes
-    the image itself, so it cannot introduce channel/interpolation skew.
+    The optional X-TerraOps-Source header tags the traffic in the prediction log
+    (e.g. `ui`, `sim:cloud:0.4`). It exists so the drift simulator's synthetic
+    load can be isolated from genuine uploads at query time — mixing them would
+    corrupt the reference the CT loop reacts to.
     """
-    state.require()
-    raw = await file.read()
-    try:
-        batch = preprocess_batch([raw], DATA_CFG)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Cannot decode image: {exc}")
-    probs = _predict_tensor(batch)
-    return _to_prediction(probs[0])
+    with _counted("/predict"):
+        state.require()
+        raw = await file.read()
+        images = _decode_all([raw])
+
+        started = time.perf_counter()
+        try:
+            batch = preprocess_batch(images, DATA_CFG)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Cannot decode image: {exc}") from exc
+        probs = _predict_tensor(batch)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        prediction = _to_prediction(probs[0])
+        _record(images, [raw], [prediction], endpoint="/predict",
+                source=x_terraops_source, elapsed_ms=elapsed_ms)
+        return prediction
 
 
 @app.post("/predict/batch", response_model=BatchPrediction)
-async def predict_batch(files: list[UploadFile] = File(...)):
+async def predict_batch(files: list[UploadFile] = File(...),
+                        x_terraops_source: Optional[str] = Header(default=None)):
     """Many images -> many predictions in a single batched forward pass."""
-    state.require()
-    raws = [await f.read() for f in files]
-    try:
-        batch = preprocess_batch(raws, DATA_CFG)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Cannot decode an image: {exc}")
-    probs = _predict_tensor(batch)
-    return BatchPrediction(
-        predictions=[_to_prediction(row) for row in probs],
-        model_version=state.version,
+    with _counted("/predict/batch"):
+        state.require()
+        raws = [await f.read() for f in files]
+        images = _decode_all(raws)
+
+        started = time.perf_counter()
+        try:
+            batch = preprocess_batch(images, DATA_CFG)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Cannot decode an image: {exc}") from exc
+        probs = _predict_tensor(batch)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        predictions = [_to_prediction(row) for row in probs]
+        _record(images, raws, predictions, endpoint="/predict/batch",
+                source=x_terraops_source, elapsed_ms=elapsed_ms)
+        return BatchPrediction(predictions=predictions, model_version=state.version)
+
+
+@app.get("/metrics")
+def prometheus_metrics():
+    """Prometheus scrape endpoint (text exposition format).
+
+    Not a JSON response_model on purpose: Prometheus consumes its own text
+    format, and wrapping it would break every scraper.
+    """
+    metrics.sync_log_gauges(predictions_log)
+    body, content_type = metrics.render()
+    return Response(content=body, media_type=content_type)
+
+
+@app.get("/monitoring/status", response_model=MonitoringStatus)
+def monitoring_status():
+    """Is the observability path itself healthy?
+
+    Deliberately separate from /health: the API is healthy even when the log is
+    down (serving is not affected), but a drift report computed over a period
+    with dropped rows is not trustworthy — that has to be visible somewhere.
+    """
+    return MonitoringStatus(
+        log_ready=predictions_log.ready,
+        rows_written=predictions_log.written,
+        rows_dropped=predictions_log.dropped,
+        flush_failures=predictions_log.failed,
+        queue_depth=predictions_log.queue_depth,
+        last_error=predictions_log.last_error,
     )
 
 
@@ -256,5 +425,5 @@ def reload():
         raise HTTPException(
             status_code=503,
             detail=f"Reload failed — registry unreachable or no champion: {exc}",
-        )
+        ) from exc
     return ReloadResult(**report)

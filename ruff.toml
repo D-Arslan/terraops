@@ -1,0 +1,35 @@
+# Ruff configuration — lint only, no formatter.
+#
+# The formatter is deliberately not enabled: this repository's comments carry
+# most of its teaching value and are hand-wrapped to stay readable next to the
+# code they explain. A reformat pass would rewrap them mechanically.
+line-length = 100
+
+# The project uses FLAT imports (`from preprocessing import ...`), because every
+# script runs with src/ on the path — that is what `python src/train.py` and
+# PYTHONPATH=src give. Without this, ruff classifies the project's own modules as
+# third-party and demands an import order that contradicts the layout.
+src = ["src", "tests"]
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes: undefined names, unused imports — real bugs
+    "I",    # import ordering, so a diff never churns on import blocks
+    "B",    # bugbear: mutable defaults, loop-variable capture, silent except
+]
+# UP (pyupgrade) is NOT enabled. It would rewrite typing.Dict -> dict and
+# Optional[X] -> X | None across every file written in sprints 1-3 — a ~90-line
+# mechanical diff through code that is currently reproducible and tested, landed
+# at the end of the project for zero behavioural gain. Worth doing as its own
+# commit with its own test run, not as a side effect of adding CI.
+ignore = [
+    "E501",  # line length is enforced by the formatter's width, not by errors on
+             # long explanatory comments
+    "B008",  # FastAPI's File(...)/Header(...) defaults are the framework's idiom
+]
+
+[lint.per-file-ignores]
+# Tests import fixtures and modules for their side effects, and pytest's
+# assert-rewriting makes some "unused" imports meaningful.
+"tests/*" = ["F401"]
