@@ -667,24 +667,52 @@ inhabituel + un diagnostic explicite dans `_describe_error`.
 
 ### Test d'acceptation de bout en bout (validé)
 
-520 requêtes réelles via HTTP (`drift_traffic.py`), 0 échec :
+520 requêtes réelles via HTTP contre l'API **conteneurisée**
+(`drift_traffic.py`), 0 échec. Les deux envois utilisent le **même échantillonnage
+équilibré** sur les 10 classes : seule la perturbation diffère.
 
-| source | n | p95 serveur | confiance | entropie | luminosité |
-|---|---|---|---|---|---|
-| `sim:baseline` | 260 | 265 ms | 0.984 | 0.019 | 0.380 |
-| `sim:cloud:0.6` | 260 | 78 ms | 0.882 | 0.129 | 0.503 |
+| source | n | p95 serveur | confiance | entropie | classes prédites | classe majoritaire |
+|---|---|---|---|---|---|---|
+| `v2:baseline` | 260 | 851 ms | 0.987 | 0.019 | **10/10** | 0.12 |
+| `v2:cloud:0.6` | 260 | 1098 ms | 0.861 | 0.156 | **7/10** | `SeaLake` **0.63** |
 
-- Rapport baseline : **pas de dérive** (part 0.17).
-- Rapport nuage 0.6 : **DÉRIVE**, part 0.92, top `mean_b` (1.38).
-- Monitor : streak 1/3 → 2/3 → 3/3 puis dry-run de dispatch, avec les DEUX
-  détecteurs allumés (part 0.92 ET effondrement `SeaLake` à 0.68). Repasser sur la
-  source baseline **remet le compteur à 0**.
+- Rapport baseline : **pas de dérive**, part **0.00**.
+- Rapport nuage 0.6 : **DÉRIVE**, part 0.92, top `mean_b` (1.44).
+- Monitor : streak 1/3 → 2/3 → 3/3 puis dry-run de dispatch, les DEUX détecteurs
+  allumés. Repasser sur la source baseline **remet le compteur à 0**.
 
-Note d'honnêteté sur les latences : le p95 client était de 2350 ms contre 265 ms
-côté serveur — l'écart est l'encodage PNG, HTTP et le client Python, pas le modèle.
-Et les deux p95 serveur ne sont pas comparables entre eux : la machine était
-chargée pendant le premier envoi. **Comparer des latences entre deux runs sur un
-poste de dev ne prouve rien.**
+L'entrée étant échantillonnée à l'identique dans les deux lignes, l'effondrement de
+classes est imputable au MODÈLE et non au trafic — c'est la seule condition qui rend
+ce chiffre interprétable (voir l'erreur n°4).
+
+Note d'honnêteté sur les latences : p95 client ~1000-1300 ms contre 851 ms serveur —
+l'écart est l'encodage PNG, HTTP et le client Python. Les deux valeurs serveur
+dépassent largement le budget de 400 ms de `params.yaml:nonreg`, mais **elles ne
+mesurent pas la même chose** : ce budget couvre un forward pass en processus, ici on
+mesure décodage + features + logging sous un client unique qui sature, sur un poste
+de dev. Ce n'est pas une régression ; ce n'est pas non plus un chiffre à citer comme
+latence de production.
+
+**4. Un signal de monitoring validé contre une baseline confondue.** Mon
+générateur de trafic prenait un pas régulier sur le dataset (pour couvrir les 10
+classes), mais `--offset` **découpait la queue** de la liste échantillonnée au lieu
+d'en décaler la phase. Résultat : `--offset 300 --count 260` n'envoyait que les
+indices 14400-26880, soit les cinq dernières classes. Le premier test d'acceptation
+annonçait donc un « effondrement de classes à 0.68 » qui mesurait en partie **quelles
+tuiles j'avais envoyées**, pas le comportement du modèle. Repéré par un smoke test
+qui a renvoyé 19 `SeaLake` sur 20.
+
+Après correction (décalage de phase, spectre complet des classes dans les deux
+envois), le résultat est plus FORT et surtout propre : à entrée équilibrée
+identique, la baseline prédit 10 classes sur 10 avec une majorité à 0.12, et le
+nuage 0.6 n'en prédit plus que 7 avec `SeaLake` à 0.63.
+
+La leçon dépasse le bug : **un détecteur ne vaut que par la comparabilité de sa
+baseline.** Un chiffre de monitoring qui bouge peut toujours être expliqué par un
+changement de l'échantillon plutôt que par un changement du système — c'est le même
+piège que le label shift confondu avec le concept drift, rencontré ici dans mon
+propre outillage. Toujours se demander : « qu'est-ce qui a changé D'AUTRE entre les
+deux mesures ? »
 
 ### Dette connue à la clôture
 

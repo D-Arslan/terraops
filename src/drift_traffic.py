@@ -85,8 +85,17 @@ def main() -> None:
     # A stride over the dataset rather than the first N images: consecutive
     # EuroSAT indices are the same class, and a single-class window would trip
     # the class-collapse detector for a reason that has nothing to do with drift.
-    step = max(1, len(raw) // (args.count + args.offset))
-    picked = list(range(0, len(raw), step))[args.offset:args.offset + args.count]
+    #
+    # --offset SHIFTS THE PHASE of the stride, it does not slice the tail of the
+    # strided list. The first version did the latter, and it silently destroyed
+    # the property this stride exists to provide: `--offset 300 --count 260`
+    # returned indices 14400..26880, i.e. only the last five classes, so a
+    # "predicted-class collapse" verdict measured the sampling, not the model.
+    # Phase-shifting keeps every run spread across all ten classes while still
+    # sending different tiles.
+    step = max(1, len(raw) // args.count)
+    start = args.offset % step
+    picked = list(range(start, len(raw), step))[:args.count]
 
     sent, failed = 0, 0
     latencies: List[float] = []

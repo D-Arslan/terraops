@@ -134,22 +134,30 @@ already at 27%.
 
 ### End-to-end acceptance test
 
-520 real HTTP requests through the running API (`src/drift_traffic.py`), 0 failures:
+520 real HTTP requests through the containerized API (`src/drift_traffic.py`),
+0 failures. Both runs use the **same balanced sampling** over the ten classes, so
+the two rows differ only by the perturbation:
 
-| traffic | n | server p95 | mean confidence | mean entropy | brightness | drift verdict |
-|---|---|---|---|---|---|---|
-| `sim:baseline` | 260 | 265 ms | 0.984 | 0.019 | 0.380 | **no drift** (share 0.17) |
-| `sim:cloud:0.6` | 260 | 78 ms | 0.882 | 0.129 | 0.503 | **DRIFT** (share 0.92, top `mean_b`) |
+| traffic | n | server p95 | mean confidence | mean entropy | classes predicted | majority class | drift verdict |
+|---|---|---|---|---|---|---|---|
+| `v2:baseline` | 260 | 851 ms | 0.987 | 0.019 | **10/10** | 0.12 | **no drift** (share 0.00) |
+| `v2:cloud:0.6` | 260 | 1098 ms | 0.861 | 0.156 | **7/10** | `SeaLake` **0.63** | **DRIFT** (share 0.92, top `mean_b` 1.44) |
 
 The CT monitor then went `streak 1/3 → 2/3 → 3/3 → would dispatch` with both
-detectors lit (drift share 0.92 **and** `SeaLake` taking 68% of predictions), and
-switching back to the baseline source **reset the streak to 0**.
+detectors lit, and switching back to the baseline source **reset the streak to 0**.
 
-Two honesty notes on those latencies. Client-side p95 was 2350 ms against 265 ms
-server-side — the gap is PNG encoding, HTTP and the Python client, not the model.
-And the two server-side p95 values are **not comparable to each other**: the machine
-was loaded during the first run. Latency comparisons across runs on a dev laptop
-prove nothing.
+Because the input sampling is identical across the two rows, the class collapse is
+attributable to the model rather than to the traffic — which is the only way that
+number means anything. It did not start out that way: see the sampling bug in
+`learning.md`, where a first version of this table reported a collapse that was
+partly an artefact of which tiles were sent.
+
+Honesty note on the latencies: client-side p95 was ~1000–1300 ms against 851 ms
+server-side — the gap is PNG encoding, HTTP and the Python client. Both server
+values are well above the 400 ms single-image budget in `params.yaml:nonreg`, but
+they measure different things: that budget covers a forward pass in process, while
+these cover decode + features + logging under a saturating single-client load on a
+dev laptop. Not a regression; not a number to quote as production latency either.
 
 ---
 
