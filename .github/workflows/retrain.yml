@@ -122,9 +122,18 @@ jobs:
           echo "- gate: **ACCEPTED**, alias moved, API reloaded" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the updated lockfile
-        # The retrain changed dvc.lock and metrics. Opening a PR rather than
-        # pushing to main keeps the human in the loop for the REPO state, even
+        # The retrain changed dvc.lock and metrics. Pushing a BRANCH rather than
+        # committing to main keeps the human in the loop for the REPO state, even
         # though the model promotion itself was automated and gated.
+        #
+        # The PR is opened on a BEST-EFFORT basis. This runs on a self-hosted
+        # runner — the project owner's machine — where the gh CLI may simply not
+        # be installed (it was not, when this was written). Failing the job over
+        # a missing convenience tool would paint a ~6-hour retrain RED after the
+        # gate had already ACCEPTED the challenger and the API was serving it,
+        # which is the worst possible signal: a red run that actually succeeded.
+        # So: push always, open the PR if we can, and always print the compare
+        # URL so a human can open it in one click either way.
         if: success()
         run: |
           BRANCH="ct/retrain-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -134,9 +143,16 @@ jobs:
           git add dvc.lock metrics
           git commit -m "CT: retrain after drift (${{ inputs.reason }})" || exit 0
           git push origin "$BRANCH"
-          gh pr create --title "CT retrain: ${{ inputs.reason }}" \
-            --body "Automated retrain. Gate ACCEPTED challenger \
-          \`${{ steps.run.outputs.run_id }}\`. Review the metrics diff before merging."
+
+          BODY="Automated retrain. Gate ACCEPTED challenger \`${{ steps.run.outputs.run_id }}\`. Review the metrics diff before merging."
+          if command -v gh > /dev/null 2>&1; then
+            gh pr create --title "CT retrain: ${{ inputs.reason }}" --body "$BODY" \
+              || echo "::warning::branch pushed but gh pr create failed"
+          else
+            echo "::warning::gh CLI not available on this runner — branch pushed, PR not opened"
+          fi
+          echo "- branch \`$BRANCH\` pushed — [open a PR](${{ github.server_url }}/${{ github.repository }}/compare/$BRANCH?expand=1)" \
+            >> "$GITHUB_STEP_SUMMARY"
         env:
           GH_TOKEN: ${{ github.token }}
 
