@@ -68,9 +68,12 @@ is exactly why CT exists, and why its output is a candidate rather than a deploy
 
 ## The map
 
-<!-- Replace with a recorded GIF: upload a tile grid, watch the choropleth fill in.
-     `docker compose up -d && open http://localhost:8501` -->
-![The Streamlit map — upload a tile grid, get a class per tile](docs/map.gif)
+![The Streamlit map — 20 tiles uploaded, one batched call, a class per cell](docs/map.gif)
+
+Twenty tiles (two per class) dropped in at once, one `/predict/batch` call, and a
+class per cell with its confidence on hover. The sidebar shows what is answering:
+`Champion v1`, resolved from `terraops-eurosat@champion` — the API never loads a
+`.pth` path, so changing the production model is a registry action, not a deploy.
 
 The UI is a **thin client**: it holds no model and its image has no torch (784 MB vs the
 API's 2.53 GB). It calls `/predict/batch` and renders the answers on a folium map.
