@@ -723,3 +723,53 @@ deux mesures ? »
 - `/reload` toujours manuel.
 - L'axe d'intensité est arbitraire : les avances ne se comparent pas ENTRE
   perturbations, seulement en signe et en ordre à l'intérieur d'une perturbation.
+
+### Clôture — la CI vérifiée, pas seulement verte
+
+Trois runs verts dès la mise en ligne, les deux jobs, smoke test du conteneur inclus.
+Mais « vert » n'est pas une information tant qu'on ne sait pas **ce qui a été
+exécuté**. La vérification, faite en prédisant d'abord le résultat puis en le
+comparant :
+
+| contexte | résultat | durée |
+|---|---|---|
+| local, stack allumée | 85 passed, **0 skipped** | ~6 min |
+| local, stack éteinte | 80 passed, **5 skipped** | 1 min 17 |
+| runner GitHub | 80 passed, **5 skipped** | 15,8 s |
+
+Même commande, même code, trois résultats — et les trois sont corrects. C'est la
+stratégie à deux niveaux qui se voit : les tests unitaires tournent partout et sont
+bloquants ; les tests de non-régression du champion servi exigent une infrastructure
+et **se désactivent proprement au lieu d'échouer**. Une CI rouge par défaut faute
+d'infra est supprimée en trois semaines ; une CI qui prétendrait les avoir passés
+serait un mensonge.
+
+Détail plus intéressant que le total : la RAISON des skips diffère. En local (données
+présentes, MLflow éteint) les 5 skips invoquent MLflow. Sur le runner, 2 invoquent
+MLflow et 3 invoquent l'absence de données DVC. Les deux garde-fous sont
+**indépendants** et nomment précisément ce qui manque — un lecteur du log sait quoi
+faire pour les réactiver. C'est la différence entre un skip exploitable et un skip
+qui masque.
+
+D'où le `-rs`, non négociable : sans lui les skips sont invisibles, et une suite qui
+saute son filet de sécurité est indistinguable d'une suite qui l'exécute.
+
+### Deux incidents de fin de sprint, gardés parce qu'ils sont instructifs
+
+**1. Un workflow qui aurait échoué après avoir réussi.** `retrain.yml` appelait
+`gh pr create` sans condition, sur un runner self-hosted — c'est-à-dire ma propre
+machine, où `gh` n'est pas installé. Un réentraînement de ~6 h ayant passé le gate,
+déplacé l'alias `@champion` et rechargé l'API se serait donc terminé en ROUGE parce
+qu'un outil de confort manquait. Un run rouge qui a réussi est le pire signal qu'un
+pipeline puisse émettre : il apprend aux gens à ignorer la couleur. Corrigé — la
+branche est toujours poussée, la PR n'est ouverte que si `gh` existe, l'URL de
+comparaison est écrite dans le résumé dans tous les cas. À noter : `drift_monitor.py`
+n'avait pas ce défaut, il avait déjà un repli REST. Le workflow, lui, n'en avait pas.
+
+**2. Un jeton OAuth imprimé en clair.** Un en-tête `Authorization` mal échappé dans
+un `curl` a fait interpréter le jeton comme un nom d'hôte, affiché intégralement dans
+le message d'erreur. Règle appliquée sans discussion : **un secret qui apparaît dans
+un log est compromis**, indépendamment de l'évaluation du risque. Révocation
+immédiate via Settings → Applications → Authorized OAuth Apps. On ne peut pas
+dé-imprimer un secret, et « probablement sans conséquence » n'est pas un état de
+sécurité mais un pari. Coût réel de la révocation : une reconnexion.
