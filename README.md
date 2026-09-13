@@ -1,390 +1,192 @@
-# TerraOps — from a 97.8% research model to a system that knows when it is no longer reliable
+# TerraOps
 
-TerraOps takes an already-trained satellite land-use classifier (EuroSAT / Sentinel-2,
-ResNet-18, **97.8% test accuracy**) and builds the engineering around it: reproducible
-pipeline, versioned data, a governed model registry, a serving API, and a monitoring stack
-that was **measured rather than assumed**.
+MLOps platform around a frozen satellite land-use classifier (EuroSAT, ResNet-18,
+97.8% test accuracy): reproducible pipeline, governed model registry, serving by
+alias, and a drift monitor whose early-warning claim was **measured, not assumed**.
 
-> **Design principle.** The model is frozen. TerraOps is not about squeezing out more
-> accuracy — it is about everything that decides whether a model can be trusted in
-> production, and about being honest when the answer is "partly".
+[![ci](https://github.com/D-Arslan/terraops/actions/workflows/ci.yml/badge.svg)](https://github.com/D-Arslan/terraops/actions/workflows/ci.yml)
 
-The headline result is not the accuracy. It is this: the drift detector gives an early
-warning on three of the four simulated degradations, is **three steps late on the fourth**,
-and the model becomes **more confident as it becomes catastrophically wrong**. All three
-facts are measured, reproducible, and documented below — including the ones that are
-inconvenient.
+The model is not the subject. The subject is everything that decides whether a
+model can still be trusted once it is in production, and being explicit when the
+answer is "only partly".
 
----
+## Problem → Result
+
+Every monitoring stack bets that its drift detector fires *before* the model
+breaks. Production has no labels, so the bet is never checked there. Here it can
+be: the drift is simulated, the ground truth is kept, and both curves go on one
+axis.
+
+![Drift detection vs accuracy, four perturbations](experiments/drift_curve/drift_curve.png)
+
+| perturbation | detector fires at | accuracy collapses at | lead | verdict |
+|---|---|---|---|---|
+| cloud veil | 0.1 | 0.2 | +0.1 | early warning |
+| seasonal shift | 0.2 | 0.6 | +0.4 | early warning |
+| band shift | 0.2 | 0.6 | +0.4 | early warning |
+| **blur** | 0.6 | 0.3 | **−0.3** | **late: structural blind spot** |
+
+Source: [experiments/drift_curve/results.json](experiments/drift_curve/results.json)
+(500 images of the frozen gate set, 8 intensities, champion v1; "collapse" = 5 points
+below the intensity-0 accuracy of 98.6%). Intensity is a fraction of an amplitude the
+author chose: only the sign and the ordering *within* a row are meaningful.
+
+Three findings, two of them uncomfortable, all with their caveats in
+[docs/DESIGN.md](docs/DESIGN.md):
+
+- **Radiometric drift is caught early.** Cloud, season and sensor calibration are
+  flagged at intensity 0.1–0.2 while accuracy is still at 95–98% at 0.4.
+- **Blur is a blind spot by construction.** Accuracy falls 97 → 81 → 61% while the
+  drifted feature share is still 0.00, then 0.42, under the 0.5 threshold. Eleven of
+  the twelve monitored features describe colour. No threshold value gives a positive
+  lead; the fix is texture or embedding features, designed and not built.
+- **The model becomes confident and wrong.** Under a full cloud veil it is at chance
+  level (9.8%) with a mean entropy *below* its resting value. Mean entropy is
+  therefore not a trigger here; a class-collapse backstop is.
+
+| the model | value | source |
+|---|---|---|
+| test accuracy, 4050 images | 97.80% (89 errors) | [metrics/metrics.json](metrics/metrics.json) |
+| accuracy on the frozen gate set | 98.10% | `champion_gate_accuracy` in results.json |
+| served version | registry v1, alias `@champion`, logged from commit `328d45a` | MLflow registry |
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph BUILD["Build — reacts to CODE"]
-        PARAMS[params.yaml<br/>single source of truth]
-        PARAMS --> DVC
-        DVC[dvc repro<br/>prepare -> train -> evaluate]
-        DVC --> RUN[MLflow run<br/>tags: git_commit, dvc_data_hash]
-        RUN --> GATE{promote.py<br/>champion vs challenger<br/>on the FROZEN set}
-        GATE -->|accepted| ALIAS[registry alias<br/>terraops-eurosat@champion]
-        GATE -->|refused| KEEP[version kept<br/>tag gate_result: refused]
+flowchart LR
+    subgraph BUILD["Build - reacts to code"]
+        P[params.yaml] --> D[dvc repro<br/>prepare / train / evaluate]
+        D --> R[MLflow run<br/>git_commit + dvc_data_hash]
+        R --> G{promotion gate<br/>frozen set}
+        G -- accepted --> A[(registry alias<br/>@champion)]
+        G -- refused --> K[version kept<br/>gate_result: refused]
     end
-
     subgraph SERVE["Serve"]
-        ALIAS -.loaded BY ALIAS.-> API[FastAPI<br/>/predict /predict/batch<br/>/reload hot-swap]
-        API --> UI[Streamlit + folium<br/>thin client, no torch]
-        PRE[preprocessing.py<br/>ONE train/serving contract] --> API
-        PRE --> DVC
+        A -. loaded by alias .-> API[FastAPI<br/>/predict  /reload]
+        API --> UI[Streamlit map<br/>no torch]
     end
-
-    subgraph OBSERVE["Observe — reacts to DATA"]
-        API -->|every prediction| LOG[(Postgres<br/>monitoring.predictions)]
-        API -->|/metrics| PROM[Prometheus<br/>p95, throughput, class mix]
-        LOG --> EVID[Evidently report<br/>vs frozen train reference]
-        EVID --> MON{drift_monitor.py<br/>persistence + cooldown}
+    subgraph OBSERVE["Observe - reacts to data"]
+        API --> LOG[(Postgres<br/>prediction log)]
+        API --> PROM[Prometheus]
+        LOG --> EV[Evidently<br/>vs frozen train reference]
+        EV --> MON{drift_monitor<br/>3 windows + 12 h cooldown}
     end
-
-    MON -->|workflow_dispatch| CT[GitHub Actions: retrain]
-    CT --> DVC
-    SIM[drift_sim.py<br/>cloud / seasonal / blur / band shift] -.calibrates the threshold.-> MON
-
-    style GATE fill:#fde8e8,stroke:#c53030
-    style MON fill:#fde8e8,stroke:#c53030
-    style PRE fill:#e6f4ea,stroke:#2f855a
+    MON -- workflow_dispatch --> CT[retrain.yml<br/>self-hosted]
+    CT --> D
+    PRE[preprocessing.py<br/>one train/serving contract] --> D
+    PRE --> API
 ```
 
-Two loops, and the distinction is the point of the whole project:
+Static copy: [docs/architecture.svg](docs/architecture.svg). Two loops, and the
+distinction is the point: CI reacts to a **commit** and produces a tested image; CT
+reacts to **drift** and produces a *candidate*, which the gate may refuse.
 
-| | trigger | input | output | decided by |
-|---|---|---|---|---|
-| **CI/CD** | a commit | code | tested image | tests (deterministic) |
-| **CT** | **drift in the data** | data + frozen code | a **candidate** model | the promotion gate |
+## Stack
 
-A model decays with no code change. CI has no reason to fire when nobody commits — which
-is exactly why CT exists, and why its output is a candidate rather than a deployment.
-
----
-
-## The map
-
-![The Streamlit map — 20 tiles uploaded, one batched call, a class per cell](docs/map.gif)
-
-Twenty tiles (two per class) dropped in at once, one `/predict/batch` call, and a
-class per cell with its confidence on hover. The sidebar shows what is answering:
-`Champion v1`, resolved from `terraops-eurosat@champion` — the API never loads a
-`.pth` path, so changing the production model is a registry action, not a deploy.
-
-The UI is a **thin client**: it holds no model and its image has no torch (784 MB vs the
-API's 2.53 GB). It calls `/predict/batch` and renders the answers on a folium map.
-
----
-
-## What was measured (Sprint 4)
-
-The question every monitoring stack bets on and almost none verifies: **does the drift
-detector fire before the model breaks?** Production has no labels, so the bet cannot be
-checked there. Here it can, because the drift is simulated and the ground truth is kept.
-
-`src/drift_experiment.py` sweeps four perturbations × eight intensities over 500 images of
-the frozen gate set, and plots both curves on one axis.
-
-![Drift detection vs accuracy](experiments/drift_curve/drift_curve.png)
-
-| perturbation | detector fires at | accuracy collapses at | lead | verdict |
-|---|---|---|---|---|
-| cloud veil | 0.1 | 0.2 | **+0.1** | early warning |
-| seasonal shift | 0.2 | 0.6 | **+0.4** | early warning |
-| band shift | 0.2 | 0.6 | **+0.4** | early warning |
-| **blur** | 0.6 | 0.3 | **−0.3** | **late — blind spot** |
-| all combined | 0.2 | 0.1 | **−0.1** | late (inherits blur) |
-
-Baseline at intensity 0: **98.60%** on the 500-image sample (the champion was gated at
-98.10% on the full 4050 — consistent within sampling noise, so the baseline is auditable,
-not self-declared).
-
-### Three findings
-
-**1. Radiometric drift is caught early.** For seasonal and sensor-calibration shifts, drift
-is flagged at intensity 0.2 while accuracy still holds at 96–98% up to 0.4. The detector
-buys real time.
-
-**2. Blur is a structural blind spot.** Accuracy falls 97% → 81% → 61% (intensity
-0.2 → 0.3 → 0.4) while the drifted feature share stays at **0.00** up to 0.3 and
-reaches only **0.42** at 0.4, still under the 0.5 alert threshold. The detector
-fires at 0.6, when accuracy is already at 27%. Eleven of the twelve monitored
-features describe colour; the only texture feature (`sharpness`) is never the
-top-drifting one in `experiments/drift_curve/results.json`. What eventually trips
-the alert is second-order colour statistics (`saturation`, then `std_b`), consistent
-with smoothing collapsing channel spread. Lowering the share threshold to any value would
-at best move the alert to 0.4, still after the drop began. **No value of that
-threshold fixes this** — it is a design consequence, now measured rather than
-suspected.
-
-**3. The model becomes confident and wrong.** Under a full cloud veil:
-
-| intensity | 0.0 | 0.4 | 0.6 | 0.8 | 1.0 |
-|---|---|---|---|---|---|
-| accuracy | 0.986 | 0.550 | 0.216 | 0.118 | **0.098** |
-| mean entropy | 0.021 | 0.116 | 0.145 | 0.030 | **0.008** |
-| majority class share | 0.12 | 0.40 | 0.71 | 0.97 | **1.00** |
-
-At intensity 1.0 the model is at **chance level** (9.8% over ten classes) and **more
-certain than at rest**. Entropy rises through the confusion zone and then *falls back below
-baseline* as every input collapses onto one class.
-
-**Consequence, applied:** mean prediction entropy is **not** a CT trigger in this project.
-A "confidence is low → something is wrong" alert would report green at the worst possible
-moment. The class-collapse signal is kept instead — as a *catastrophe backstop*, not an
-early warning, because it too only reaches its threshold under blur once accuracy is
-already at 27%.
-
----
-
-### End-to-end acceptance test
-
-520 real HTTP requests through the containerized API (`src/drift_traffic.py`),
-0 failures. Both runs use the **same balanced sampling** over the ten classes, so
-the two rows differ only by the perturbation:
-
-| traffic | n | server p95 | mean confidence | mean entropy | classes predicted | majority class | drift verdict |
-|---|---|---|---|---|---|---|---|
-| `v2:baseline` | 260 | 851 ms | 0.987 | 0.019 | **10/10** | 0.12 | **no drift** (share 0.00) |
-| `v2:cloud:0.6` | 260 | 1098 ms | 0.861 | 0.156 | **7/10** | `SeaLake` **0.63** | **DRIFT** (share 0.92, top `mean_b` 1.44) |
-
-The CT monitor then went `streak 1/3 → 2/3 → 3/3 → would dispatch` with both
-detectors lit, and switching back to the baseline source **reset the streak to 0**.
-
-Because the input sampling is identical across the two rows, the class collapse is
-attributable to the model rather than to the traffic — which is the only way that
-number means anything. It did not start out that way: see the sampling bug in
-`learning.md`, where a first version of this table reported a collapse that was
-partly an artefact of which tiles were sent.
-
-Honesty note on the latencies: client-side p95 was ~1000–1300 ms against 851 ms
-server-side — the gap is PNG encoding, HTTP and the Python client. Both server
-values are well above the 400 ms single-image budget in `params.yaml:nonreg`, but
-they measure different things: that budget covers a forward pass in process, while
-these cover decode + features + logging under a saturating single-client load on a
-dev laptop. Not a regression; not a number to quote as production latency either.
-
----
-
-## Technical decisions, and why
-
-**One preprocessing module, imported by training, the gate and the API.**
-`src/preprocessing.py` owns the whole chain from raw bytes to tensor — decoding included,
-because channel order, alpha, and EXIF rotation are the classic silent-skew sources and
-they happen *before* the transforms. Train/serving skew is impossible by construction
-rather than discouraged by documentation.
-
-**The API loads the model by ALIAS, never from a path.**
-`models:/terraops-eurosat@champion`. Changing what production serves is a governance action
-(move the alias through the gate), not a code deploy. `POST /reload` re-resolves the alias
-in process, so a promotion reaches production without a restart.
-
-**A promotion gate that can say no.**
-Absolute accuracy floor, a minimum delta above seed noise, **and a per-class recall
-guard**: a challenger that gains 0.5 points overall while losing 8 on `Highway` is refused.
-Over the sprint-2 campaign, 5 experiments produced 0 improvements and **3 documented
-refusals**. A gateless CT loop would have shipped all three.
-
-**A frozen validation set, committed.**
-`gate/frozen_val.json` is the anchor every version is measured against. Its input-side twin
-is `monitoring/reference.json` — the drift reference, built from the **train** split,
-**without augmentation** (augmentation is a regulariser, not a description of the world;
-including it would inflate the reference variance and blind the detector to exactly the
-radiometric drift it exists to catch).
-
-**Effect sizes, not p-values.**
-The drift test is pinned to normalized Wasserstein distance in `params.yaml`. A p-value
-test answers "am I sure they differ?", and at large volume the answer is always yes: at
-n = 500k, KS rejects on a 0.2% CDF difference — significant and irrelevant, fires daily
-until someone mutes it. The window is capped for the same reason, and a floor makes the
-report **refuse to conclude** on thin traffic rather than emit a confident verdict.
-
-**Three-valued drift status.** `ok / drift` / `insufficient_data`. "No data" must never
-read as "no drift" — that is the silent-failure shape this whole sprint exists to prevent.
-
-**Non-blocking prediction logging.** Every prediction is written to Postgres through a
-bounded queue drained by a background thread. If the queue saturates, rows are **dropped
-and counted**, and the counter is exposed. A monitoring pipeline must never be able to take
-down the service it observes; losing rows silently would be worse, because a drift report
-computed over a lossy window is wrong without saying so.
-
-**Prometheus and Postgres do different jobs.** Prometheus answers "is the service healthy
-now?" (pre-aggregated, seconds, days of retention). Postgres answers "what exactly did
-production see?" (row-level, joinable, months). Doing drift detection in Prometheus would
-mean per-image feature values as labels — unbounded cardinality, the canonical way to kill
-a Prometheus server.
-
-**A CT loop that mostly refuses.** Persistence (3 consecutive windows), a 12-hour cooldown,
-inconclusive windows that neither confirm nor reset, and an explicit `--dispatch` flag
-(dry run by default). Drift caused by a broken sensor does not go away when you retrain, so
-without a cooldown the loop would retrain forever on increasingly corrupted data.
-
----
-
-## LIMITS AND PROTOCOL HONESTY
-
-Everything above is real and reproducible. Here is exactly what it does **not** establish.
-
-**The drift is simulated. There is no production stream.**
-No second satellite, no seasonal archive, no user feedback. The perturbations are
-parametric functions I wrote, with amplitudes I chose (`params.yaml: drift_sim`). A
-detector calibrated on that family is calibrated on **that family**. Real drift — a new
-sensor's spectral response, a different atmospheric correction, a new geography — can be
-shaped differently. The curves are evidence, not proof, and the threshold they produce is a
-starting point, not a guarantee.
-
-**Only covariate shift is simulated, never concept drift.**
-The perturbations are label-preserving by construction: a forest under haze is still a
-forest, so `P(Y|X)` is untouched. Simulating concept drift would mean changing the labels,
-which is a different experiment. **Nothing here demonstrates detection of concept drift, and
-concept drift is not detectable without labels at all.**
-
-**The intensity axis is arbitrary.** `0.4` is not "40% cloud cover"; it is 40% of an
-amplitude I picked. Comparing leads *between* perturbations compares different arbitrary
-scales. Only the **sign** and the **ordering** of the two events within one perturbation are
-meaningful.
-
-**The lead values are grid bounds, not crossing points.** Measured on
-`[0, 0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1.0]`, so a reported lead of +0.1 is compatible with a
-true lead near zero. The grid is also denser at the low end, so leads measured high in the
-range are coarser. A lead of 0 does not prove simultaneity.
-
-**The accuracy numbers carry ±2 points of sampling noise.** The sweep uses 500 images. That
-is why "collapse" is defined as a 5-point drop, comfortably above the noise — but small
-differences between adjacent points should not be read as signal.
-
-**EuroSAT is Eurocentric, and small.** 27,000 Sentinel-2 tiles over Europe, 64×64 pixels,
-ten coarse classes, cloud-free by curation. Nothing here says anything about tropical
-land cover, arid regions, sub-metre imagery, or the cloudy scenes that dominate real
-acquisition. The 97.8% is a number about *this* benchmark.
-
-**The tiles are natively 64×64 and are upscaled to 224.** Roughly 12× the compute for no
-extra information — inherited from the ImageNet backbone. Known debt, deliberately not
-changed mid-campaign so comparisons stay valid.
-
-**The monitoring blind spot is real and not fixed.** Under blur, neither detector warns in
-time. The honest summary is: this stack catches radiometric drift early and misses
-texture-only degradation. Fixing it would mean adding texture/frequency features or
-embedding-based drift — designed, not yet built.
-
-**Two real drifts can cancel on a monitored feature.** Measured while building the
-simulator: the cloud veil brightens while the winter shift darkens, so their composite is
-*closer* to the reference in aggregate pixel distance than the cloud alone; and the band
-shift's asymmetric gains raise saturation, cancelling the drop from cloud and winter. A
-single aggregate distance can shrink while the situation worsens. Feature-level comparison
-mitigates this; it does not eliminate it.
-
-**The CT workflow cannot run on a GitHub-hosted runner.** It needs the DVC remote (MinIO)
-and the MLflow registry, both of which run locally. `retrain.yml` targets a self-hosted
-runner. On a public runner it will not work — no green badge is claimed for it.
-
-**The API's own drift is not monitored.** `/reload` is manual: no TTL, no webhook. If a new
-champion is promoted and nobody calls it, the API keeps serving the old version. The
-version is exposed on `/model-info` and as a Prometheus label, so it is *visible*, but
-nothing enforces it.
-
-**The 97.8% is inherited, not reproduced end to end here.** Sprint 1 reproduced the
-reference model bit-for-bit from the pipeline; the number's original provenance is the
-audited notebook that preceded this repository.
-
----
-
-## Getting Started
-
-### Prerequisites
-Python 3.12, Docker.
-
-### 1. Install and start the stack
-```bash
-git clone https://github.com/D-Arslan/terraops.git && cd terraops
-pip install -r requirements.txt
-docker compose up -d          # MinIO, Postgres, MLflow, API, UI, Prometheus
-```
-Never `docker compose down -v` — it destroys the run history and the registry.
-
-| service | URL |
+| layer | tools |
 |---|---|
-| MLflow (tracking + registry) | http://localhost:5000 |
-| Serving API (Swagger at `/docs`) | http://localhost:8000 |
-| Streamlit map | http://localhost:8501 |
-| Prometheus | http://localhost:9090 |
-| MinIO console | http://localhost:9001 |
-| Postgres (host access for the monitoring CLI) | `localhost:55433` |
+| pipeline and data | DVC 3.67, MinIO (S3), `params.yaml` as the single source of truth |
+| tracking and registry | MLflow 3.4 on PostgreSQL 16, artifacts proxied to MinIO |
+| model | PyTorch 2.10 CPU, torchvision ResNet-18, 64×64 tiles upscaled to 224 |
+| serving | FastAPI, Streamlit + folium (thin client, no torch) |
+| monitoring | Prometheus 3.13, Evidently 0.7 (normalized Wasserstein), Postgres prediction log |
+| quality | pytest (108 tests), ruff, GitHub Actions (CI on hosted runner, CT on self-hosted) |
 
-Postgres is published on **55433**, not 5432: a native PostgreSQL install commonly
-owns 5432, and the container would appear to publish the port while every host
-connection silently reached the other database.
+## Getting started in 3 commands
 
-### 2. Reproduce the pipeline
 ```bash
-dvc pull      # fetch dataset + model from the remote, OR
-dvc repro     # rebuild: prepare -> train -> evaluate
+git clone https://github.com/D-Arslan/terraops.git && cd terraops && pip install -r requirements.txt
+docker compose up -d      # MinIO, Postgres, MLflow :5000, API :8000, UI :8501, Prometheus :9090
+dvc repro                 # prepare (downloads EuroSAT, 90 MB) -> train -> evaluate
 ```
 
-### 3. Promote a model (never move the alias by hand)
+What you get, honestly:
+
+- **After `docker compose up`, the registry is empty**: the API boots in degraded
+  mode and answers 503 on `/predict` until a champion exists. That is by design.
+- **`dvc pull` does not work from a fresh clone**: the DVC remote is a MinIO on the
+  author's machine. The champion weights are not downloadable; they are reproducible.
+- **The full `dvc repro` is about 6 CPU-hours** (25 epochs, ~15 min each). For a
+  20-minute smoke test, set `train.epochs: 1` in `params.yaml` first, then discard
+  the smoke with `git checkout -- params.yaml dvc.lock`.
+- **Then promote and serve**, never by moving the alias by hand:
+
 ```bash
-python src/promote.py --run-id <RUN_ID>     # exits 1 if the gate refuses
-curl -X POST http://localhost:8000/reload   # serve the new champion, no restart
+python src/promote.py --run-id <RUN_ID>    # run id printed by train.py, or from localhost:5000
+curl -X POST http://localhost:8000/reload  # the API now serves @champion, no restart
+python -m pytest -q -rs                    # 108 tests; 5 non-regression tests skip without the stack
 ```
 
-### 4. Monitoring
-```bash
-python src/drift_reference.py                    # build the frozen reference (once)
-python src/drift_report.py --source ui           # Evidently HTML + JSON summary
-python src/drift_monitor.py                      # CT decision (dry run by default)
-python src/drift_monitor.py --dispatch           # actually trigger retraining
-python src/drift_experiment.py --sample 500      # the accuracy/drift curve (~35 min CPU)
-```
+Drift chain, all dry-run by default: `src/drift_reference.py` (once, committed) →
+`src/drift_traffic.py --kind cloud --intensity 0.6` (tagged traffic) →
+`src/drift_report.py --source sim:cloud:0.6` → `src/drift_monitor.py` (`--dispatch`
+to actually fire). Copy `.env.example` to `.env` for the host-side variables; Postgres
+is published on **55433**, not 5432, on purpose (a native install often owns 5432).
 
-### 5. Tests
-```bash
-pytest -q -rs    # non-regression tests auto-skip if the stack is down
-ruff check src tests
-```
-
----
-
-## Project structure
+## Repository layout
 
 ```
 terraops/
 ├── params.yaml                  # every tunable: pipeline, gate, monitor, simulator
-├── dvc.yaml / dvc.lock          # the DAG and its pinned hashes
-├── docker-compose.yml           # MinIO, Postgres, MLflow, API, UI, Prometheus
+├── dvc.yaml / dvc.lock          # the DAG and its pinned hashes (clean at HEAD)
+├── docker-compose.yml           # MinIO, Postgres, MLflow, API, UI, Prometheus (pinned tags)
 ├── gate/frozen_val.json         # committed anchor for promotion (performance side)
-├── monitoring/
-│   ├── reference.json           # committed anchor for drift (input side)
-│   ├── prometheus.yml           # scrape config
-│   └── rules.yml                # service + model-signal alerts
+├── monitoring/reference.json    # committed anchor for drift (input side, train split)
 ├── src/
-│   ├── preprocessing.py         # THE train/serving contract
-│   ├── train.py / evaluate.py   # pipeline stages
-│   ├── promote.py               # champion/challenger gate
-│   ├── api.py                   # FastAPI, loads @champion by alias
-│   ├── image_features.py        # THE monitoring feature extractor
-│   ├── prediction_log.py        # non-blocking Postgres logging
-│   ├── metrics.py               # Prometheus instrumentation
-│   ├── drift_sim.py             # the four perturbations
-│   ├── drift_reference.py       # frozen train reference
+│   ├── preprocessing.py         # THE train/serving contract (bytes -> tensor)
+│   ├── image_features.py        # THE monitoring feature extractor (12 features)
+│   ├── train.py / evaluate.py   # pipeline stages, one MLflow run per training
+│   ├── promote.py               # champion/challenger gate (pure rules + registry)
+│   ├── api.py                   # FastAPI, loads @champion by alias, /reload hot-swap
+│   ├── prediction_log.py        # non-blocking Postgres logging (bounded queue)
+│   ├── drift_sim.py             # the four label-preserving perturbations
 │   ├── drift_report.py          # Evidently comparison + JSON summary
-│   ├── drift_experiment.py      # the accuracy vs drift sweep
-│   ├── drift_monitor.py         # CT trigger: persistence, cooldown, dispatch
-│   └── resolve_run.py           # run lookup by git_commit, for the CT workflow
+│   ├── drift_experiment.py      # the accuracy vs drift sweep behind the figure
+│   └── drift_monitor.py         # CT trigger: persistence, cooldown, dispatch
 ├── ui/streamlit_app.py          # thin client + folium map
-├── experiments/drift_curve/     # results.json + the figure above
-├── .github/workflows/
-│   ├── ci.yml                   # ruff, pytest, docker build, container smoke test
-│   └── retrain.yml              # CT: workflow_dispatch -> dvc repro -> gate
-└── learning.md                  # the learning log (French): concepts, mistakes, interview prep
+├── tests/                       # unit (preprocessing, features, gate, trigger, API contract) + non-regression
+├── experiments/
+│   ├── drift_curve/             # results.json + the figure above
+│   └── acceptance/              # E2E run of 2026-08-08: summary.json + Evidently reports
+├── docs/                        # DESIGN.md (decisions, caveats, debt), learning.md (French log), map.gif
+└── .github/workflows/           # ci.yml (ruff, pytest, build, container smoke) · retrain.yml (CT)
 ```
 
----
+## Design decisions and trade-offs
 
-## Tech stack
+- **One preprocessing module** imported by training, the gate and the API, decoding
+  included: train/serving skew is impossible by construction, not discouraged by docs.
+- **The API loads by alias**, `models:/terraops-eurosat@champion`, never from a path.
+  Changing production is a governance action through the gate, then `POST /reload`.
+- **A gate that says no**: absolute floor, margin above seed noise, per-class recall
+  guard. Over five sprint-2 experiments it refused every challenger; the two real
+  refusals (v3, v4) stay in the registry, tagged.
+- **Two committed anchors**, never sliding: the frozen gate set and the train-split
+  drift reference built without augmentation. A sliding window would hide slow drift.
+- **Effect sizes, capped windows, and a status that can say "insufficient data"**:
+  a p-value test on a large window fires daily; "no data" must never read as "no drift".
 
-`PyTorch` · `DVC` · `MinIO` · `MLflow` · `FastAPI` · `Streamlit` · `Postgres` ·
-`Prometheus` · `Evidently` · `Docker` · `GitHub Actions` · `ruff` · `pytest`
+Details, and the reasoning behind each: [docs/DESIGN.md](docs/DESIGN.md).
+
+## Limits and next steps
+
+- **The drift is simulated.** No production stream, no concept drift (perturbations
+  are label-preserving), EuroSAT is Eurocentric. The curves are evidence about one
+  family of perturbations, not proof.
+- **Blur blind spot not fixed.** Next step: texture or frequency features, or drift
+  on embeddings.
+- **CT cannot run on a hosted runner**: MinIO and MLflow are local, `retrain.yml`
+  targets a self-hosted runner. No green badge is claimed for it.
+- **`/reload` is manual** (no TTL, no webhook); the served version is visible on
+  `/model-info` and in Prometheus, not enforced.
+- **Cost**: 64×64 tiles upscaled to 224 (~12× compute), API image 2.53 GB. Next step:
+  `mlflow-skinny`, and a native-resolution head.
+
+## Author
+
+Arslan Dif, M2 distributed systems and data science.
+Related work: [UrbanFlow](https://github.com/D-Arslan/UrbanFlow) (real-time Vélib'
+pipeline, Kafka / Spark / XGBoost), [TerraOps Copilot](https://github.com/D-Arslan/terraops-copilot)
+(LLM agent with tools over this stack, evaluated against ground truth),
+[Crop Classification](https://github.com/D-Arslan/crop-classification) (MCTNet
+reproduction on Sentinel-2 time series).
