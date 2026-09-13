@@ -4,9 +4,11 @@
 # different stack and could produce different results. Pinning freezes the stack.
 # Python: 3.12.x
 
-# --- Deep learning ---
-torch==2.10.0
-torchvision==0.25.0
+# --- Deep learning: CPU wheels from the PyTorch index (no CUDA payload), the
+# same build the API image uses (requirements-api.txt) ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.10.0+cpu
+torchvision==0.25.0+cpu
 pillow==12.1.1
 
 # --- Data / metrics ---

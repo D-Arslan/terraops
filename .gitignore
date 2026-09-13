@@ -6,6 +6,12 @@ __pycache__/
 venv/
 .env
 .pytest_cache/
+.ruff_cache/
+
+# --- Assistant / machine-local files: never versioned ---
+.claude/
+CLAUDE.md
+*.local
 
 # --- DVC-tracked data & model artifacts ---
 # On NE commite PAS les octets lourds dans Git. DVC les gère :

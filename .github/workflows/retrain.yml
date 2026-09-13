@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 720
     env:
       MLFLOW_TRACKING_URI: http://localhost:5000
-      TERRAOPS_DB_URI: postgresql://mlflow:mlflow@localhost:5432/mlflow
+      TERRAOPS_DB_URI: postgresql://mlflow:mlflow@localhost:55433/mlflow
       PYTHONPATH: src
 
     steps:

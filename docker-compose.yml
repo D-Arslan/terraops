@@ -10,7 +10,7 @@
 #              need MLFLOW_TRACKING_URI, zero S3 credentials on the client side.
 services:
   minio:
-    image: minio/minio:latest          # TODO: pin a RELEASE.* tag for full repro
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: terraops-minio
     ports:
       - "9000:9000"                     # S3 API  -> used by DVC
@@ -26,7 +26,7 @@ services:
   # One-shot job: create both buckets (idempotent thanks to --ignore-existing),
   # retrying until MinIO is ready. mlflow's depends_on waits for this to finish.
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     container_name: terraops-minio-init
     depends_on:
       - minio
@@ -38,7 +38,7 @@ services:
       "
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.13-alpine
     container_name: terraops-postgres
     environment:
       POSTGRES_USER: mlflow
@@ -119,6 +119,14 @@ services:
         condition: service_healthy       # wait for the registry to actually answer
       postgres:
         condition: service_healthy
+    healthcheck:
+      # /health is a LIVENESS probe (200 even with no model loaded): it says the
+      # process answers, not that the champion is served (/model-info says that).
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
     restart: unless-stopped
 
   # Prometheus: scrapes the API's /metrics. Service-level observability only —
@@ -126,7 +134,7 @@ services:
   # (it needs a reference distribution and row-level history: Evidently over the
   # Postgres prediction log).
   prometheus:
-    image: prom/prometheus:latest      # TODO: pin a version tag for full repro
+    image: prom/prometheus:v3.13.2
     container_name: terraops-prometheus
     ports:
       - "9090:9090"                     # http://localhost:9090
