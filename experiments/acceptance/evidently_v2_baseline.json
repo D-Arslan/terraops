@@ -1,0 +1,125 @@
+{
+  "status": "ok",
+  "n_reference": 3000,
+  "n_current": 260,
+  "stattest": "wasserstein",
+  "stattest_threshold": 0.1,
+  "drift_share_threshold": 0.5,
+  "drifted_count": 0,
+  "drifted_share": 0.0,
+  "dataset_drift": false,
+  "features": {
+    "brightness": {
+      "distance": 0.0628714067548527,
+      "drifted": false
+    },
+    "contrast": {
+      "distance": 0.04000970666498299,
+      "drifted": false
+    },
+    "saturation": {
+      "distance": 0.0365006177271142,
+      "drifted": false
+    },
+    "sharpness": {
+      "distance": 0.006259376548044897,
+      "drifted": false
+    },
+    "mean_r": {
+      "distance": 0.06655255539396121,
+      "drifted": false
+    },
+    "mean_g": {
+      "distance": 0.06066678094087999,
+      "drifted": false
+    },
+    "mean_b": {
+      "distance": 0.0718798726195801,
+      "drifted": false
+    },
+    "std_r": {
+      "distance": 0.03643059785877039,
+      "drifted": false
+    },
+    "std_g": {
+      "distance": 0.04558500399585993,
+      "drifted": false
+    },
+    "std_b": {
+      "distance": 0.05234671753714381,
+      "drifted": false
+    },
+    "red_ratio": {
+      "distance": 0.07288107584259276,
+      "drifted": false
+    },
+    "blue_ratio": {
+      "distance": 0.07027741970448667,
+      "drifted": false
+    }
+  },
+  "top_drifted": [
+    {
+      "feature": "red_ratio",
+      "distance": 0.07288107584259276,
+      "drifted": false
+    },
+    {
+      "feature": "mean_b",
+      "distance": 0.0718798726195801,
+      "drifted": false
+    },
+    {
+      "feature": "blue_ratio",
+      "distance": 0.07027741970448667,
+      "drifted": false
+    },
+    {
+      "feature": "mean_r",
+      "distance": 0.06655255539396121,
+      "drifted": false
+    },
+    {
+      "feature": "brightness",
+      "distance": 0.0628714067548527,
+      "drifted": false
+    }
+  ],
+  "window": {
+    "source_filter": "v2:baseline",
+    "since_minutes": null,
+    "limit": 2000,
+    "n_fetched": 260,
+    "newest_ts": "2026-08-08 14:23:02.631826+00:00",
+    "oldest_ts": "2026-08-08 14:21:25.396746+00:00"
+  },
+  "generated_at": "2026-08-08T14:57:48.370019+00:00",
+  "reference": {
+    "created_at": "2026-08-07T12:49:22.364174+00:00",
+    "git_commit": "78d10519452b78ea4bf5d661a89b7424b84276f9",
+    "dvc_data_hash": "639ea9ac2ed1be8803091fcf456620a4.dir",
+    "split": "train",
+    "n_samples": 3000
+  },
+  "predictions": {
+    "note": "predicted classes, NOT ground-truth labels \u2014 production has none",
+    "predicted_class_share": {
+      "AnnualCrop": 0.11538461538461539,
+      "Forest": 0.11153846153846154,
+      "HerbaceousVegetation": 0.11538461538461539,
+      "Highway": 0.09230769230769231,
+      "Industrial": 0.08846153846153847,
+      "Pasture": 0.07692307692307693,
+      "PermanentCrop": 0.09230769230769231,
+      "Residential": 0.11153846153846154,
+      "River": 0.09230769230769231,
+      "SeaLake": 0.10384615384615385
+    },
+    "mean_confidence": 0.9866446153846155,
+    "mean_entropy": 0.018931296996692305,
+    "mean_latency_ms": 308.0167457923077,
+    "model_versions": [
+      "1"
+    ]
+  }
+}

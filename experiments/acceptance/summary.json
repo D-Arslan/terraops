@@ -1,0 +1,46 @@
+{
+  "description": "End-to-end acceptance test of the containerized API: 520 real HTTP requests (src/drift_traffic.py, balanced 26 tiles x 10 classes per source), then drift_report.py per source. Figures re-derived on 2026-09-13 from the prediction log still present in monitoring.predictions and from the two Evidently JSON summaries copied alongside.",
+  "run_date": "2026-08-08",
+  "champion_version": "1",
+  "provenance": {
+    "sql_aggregates": "select source, count(*), percentile_cont(0.95) within group (order by latency_ms), avg(confidence), avg(entropy), count(distinct predicted_class), min(ts), max(ts), min(model_version) from monitoring.predictions where source like 'v2:%%' group by source order by source",
+    "sql_class_shares": "select source, predicted_class, count(*) from monitoring.predictions where source like 'v2:%%' group by 1,2",
+    "note": "The raw prediction log is NOT versioned (Postgres volume); the two Evidently JSONs are. Client-side p95 (~1000-1300 ms) was read live and is not reproducible."
+  },
+  "sources": {
+    "v2:baseline": {
+      "n_requests": 260,
+      "server_p95_latency_ms": 851.4,
+      "mean_confidence": 0.987,
+      "mean_entropy": 0.019,
+      "distinct_classes_predicted": 10,
+      "first_ts": "2026-08-08T14:21:25.396746+00:00",
+      "last_ts": "2026-08-08T14:23:02.631826+00:00",
+      "model_version": "1",
+      "majority_class": "HerbaceousVegetation",
+      "majority_class_share": 0.12,
+      "drifted_share": 0.0,
+      "dataset_drift": false,
+      "top_drifted_feature": "red_ratio",
+      "top_distance": 0.07,
+      "evidently_report": "evidently_v2_baseline.json"
+    },
+    "v2:cloud:0.6": {
+      "n_requests": 260,
+      "server_p95_latency_ms": 1097.6,
+      "mean_confidence": 0.861,
+      "mean_entropy": 0.156,
+      "distinct_classes_predicted": 7,
+      "first_ts": "2026-08-08T14:23:30.664162+00:00",
+      "last_ts": "2026-08-08T14:25:41.948524+00:00",
+      "model_version": "1",
+      "majority_class": "SeaLake",
+      "majority_class_share": 0.63,
+      "drifted_share": 0.92,
+      "dataset_drift": true,
+      "top_drifted_feature": "mean_b",
+      "top_distance": 1.44,
+      "evidently_report": "evidently_v2_cloud_0.6.json"
+    }
+  }
+}

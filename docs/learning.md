@@ -183,20 +183,6 @@ Il hashe `deps`, `params`, `outs` et compare au `dvc.lock` :
 | Gouvernance secrets | adresse du remote dans Git, identifiants dans `.dvc/config.local` gitignoré. |
 | DVC vs alternatives | Git-LFS (pas de pipeline) ; MLflow (expériences, Sprint 2) ; DVC = les 3. |
 
-### Questions type recruteur (Sprint 1)
-
-1. **« Pourquoi DVC et pas Git-LFS ou juste les artifacts MLflow ? »**
-   Git-LFS versionne mais n'orchestre pas de pipeline ; MLflow trace les expériences mais
-   ne versionne pas l'input data ni le DAG. DVC fait pointeurs + remote + DAG reproductible.
-2. **« Comment DVC sait qu'une étape doit être relancée ? »**
-   Il hashe deps + params + outs, compare au `dvc.lock` ; un hash différent → étape sale →
-   relance, et propagation à tout l'aval qui en dépend.
-3. **« Où sont stockés le dataset et les secrets, et pourquoi cette séparation ? »**
-   Octets → MinIO (remote S3) via `dvc push` ; pointeurs + métriques → Git ; identifiants →
-   `.dvc/config.local` gitignoré. But : reproductibilité + aucun secret dans l'historique Git.
-
----
-
 ## Sprint 2 — MLflow : tracking, registry, lineage, gate de promotion
 
 ### Ce qu'on a construit
@@ -291,27 +277,6 @@ ENTRÉES (code, params) invalide le lineage.
 - [x] Lineage 30 s : depuis `models:/terraops-eurosat@champion` → run → tags →
   commandes `git checkout` + `dvc pull` exactes.
 - [x] Le gate refuse un modèle moins bon : démontré 3 fois (grossier v2, net v3, serré v4).
-
-### Questions type recruteur (Sprint 2)
-
-1. **« Tracking vs Registry ? »** Cahier de labo immuable vs catalogue de production
-   avec versions et alias — on ne « release » pas chaque commit.
-2. **« Comment garantissez-vous la traçabilité modèle → données ? »** Tags
-   `git_commit` + `dvc_data_hash` posés avant l'entraînement ; chaîne registry → run →
-   checkout + pull. Testé en conditions réelles.
-3. **« Un modèle gagne de 0.1 pt, vous le promouvez ? »** Non : bande de bruit, jeu
-   figé, non-régression par classe, coût d'inférence visible. Décision scriptée.
-4. **« Pourquoi le champion a-t-il eu plus d'epochs que les challengers ? »** Le gate
-   compare des MODÈLES finis, pas des protocoles. Un challenger peut prendre le même
-   budget ; seul le résultat sur le jeu figé compte.
-5. **« Une fois où le process a contredit votre intuition ? »** Duel final 97.65 vs
-   98.10 : « presque pareil » à l'œil, refus sur la marge au gate. Et une hypothèse
-   scheduler réfutée par l'historique du LR loggé — on ne devine pas, on logge.
-6. **« Quelle dette assumez-vous ? »** EuroSAT 64×64 natif upscalé à 224 (~12× de
-   calcul). Changement reporté sciemment : modifier les règles en pleine campagne
-   détruit la comparabilité (et le duel du gate).
-
----
 
 ## Sprint 3 — Serving : de la gouvernance à la production
 
@@ -415,73 +380,6 @@ pytest/CI de `promote.py` : mêmes seuils (`params.yaml`), même jeu figé.
 - [x] Tests : 13 passed (preprocessing + contrat API dégradé) + 5 non-régression verts
   contre le champion v1 réel (accuracy > baseline 0.9810, recall par classe, invariances
   hflip/JPEG, latence).
-
-### Questions type recruteur (Sprint 3) — réponses développées
-
-1. **« Qu'est-ce que le train/serving skew et pourquoi c'est vicieux ? »**
-   Un modèle en prod n'est pas `model.pth`, c'est `model(preprocessing(x))`. Le skew =
-   preprocessing d'entraînement ≠ preprocessing de serving : mêmes poids, mais tenseurs
-   d'une distribution différente de celle vue à l'entraînement. Vicieux pour 3 raisons
-   cumulées : (1) AUCUNE erreur — shape valide, forward OK, proba confiante ; (2) pas de
-   labels en prod → accuracy non mesurée en direct, dégradation invisible aux dashboards
-   (latence/erreurs HTTP tout vert) ; (3) cause souvent anodine (cv2 BGR, Normalize
-   oublié, interpolation par défaut). Découvert tard, via jeu de contrôle ou plainte.
-   Parade : un seul module preprocessing (train + serving) → skew IMPOSSIBLE par
-   construction, pas « surveillé ».
-
-2. **« Votre module partagé élimine-t-il TOUT skew ? »**
-   Non, et ne pas le survendre. La garantie ne vaut qu'à partir de la FRONTIÈRE d'entrée.
-   Décodage, ordre des canaux, EXIF se passent AVANT : hors garantie si le module ne les
-   possède pas. API qui décode en BGR puis passe le tableau → le module applique la bonne
-   transform à une entrée déjà corrompue. D'où frontière aux BYTES bruts : `decode_image`
-   = `convert("RGB")` + `exif_transpose`, l'API ne décode pas elle-même. Honnêteté : ne
-   protège pas non plus du skew de DONNÉES (drift de la distribution) → c'est le
-   monitoring, autre sujet.
-
-3. **« Pourquoi charger par alias plutôt qu'un `.pth` ? »**
-   Ça déplace le changement de modèle du cycle de vie du CODE vers celui de la
-   GOUVERNANCE. Chemin en dur → modifier code, rebuild, redéployer (déploiement logiciel).
-   Alias → promouvoir = déplacer l'alias (via promote.py), l'API re-résout. Bénéfices :
-   rollback instantané (repointer l'alias = 1 commande, pas un redéploiement) ; séparation
-   des responsabilités (qui décide du champion ≠ qui opère l'API) ; traçabilité (registry
-   sait qui/depuis quand/quel run-commit-data ; un chemin ne sait rien). Nuance : alias
-   résolu au chargement → `/reload` pour propager sans redémarrer.
-
-4. **« Registry down au démarrage de l'API ? »**
-   Dégradation gracieuse, PAS fail-fast — raison conteneurs : dans `compose up`, API et
-   MLflow démarrent ensemble ; fail-fast ferait crash-looper l'API parce que MLflow a
-   booté 2 s plus tard ou qu'aucun champion n'est promu. Donc : API boote toujours ;
-   `/health` 200 (LIVENESS) avec `model_loaded:false` ; `/predict` et `/model-info` → 503
-   (READINESS). Récupération par `/reload`, sans redémarrage. Ordre de boot gaté au niveau
-   compose (healthcheck MLflow + `depends_on: service_healthy`), ce qui évite aussi le
-   timeout HTTP MLflow par défaut (120 s). Clé : liveness ≠ readiness.
-
-5. **« Un test de non-régression rouge, code inchangé — trois causes ? »**
-   Cadre : ce test assert une PROPRIÉTÉ STATISTIQUE du couple (code + poids +
-   dépendances), pas une sortie exacte → peut virer rouge sans code modifié. Causes : (a)
-   nouveau champion globalement meilleur mais qui régresse une classe → le test fait son
-   travail ; (b) bump de dépendance qui change le comportement (Pillow → interpolation →
-   skew) ; (c) jeu de contrôle dérivé (hash changé). Distinction par le LINEAGE
-   (git_commit/dvc_data_hash : code ou données ont bougé ?) et par QUELLE assertion tombe
-   (globale = dépendance/skew ; une classe = régression localisée ; invariance = transform ;
-   data_hash différent = drift du jeu figé).
-
-6. **« Pourquoi un seuil global d'accuracy ne suffit pas ? »**
-   La moyenne sur 10 classes déséquilibrées NOIE l'effondrement d'une classe minoritaire.
-   Highway/River pèsent peu : recall 94→60 % pendant que l'accuracy globale bouge de
-   ~0.3 pt → sous un seuil de 0.95, tout reste vert, on déploie un modèle aveugle aux
-   autoroutes. D'où plancher PAR CLASSE en plus du global, comme `max_class_recall_drop`
-   au gate. « La moyenne est un mauvais résumé quand la distribution est déséquilibrée et
-   le coût d'erreur non uniforme. »
-
-7. **« Comment gardez-vous l'image API sous 5 Go ? »**
-   4 leviers, du plus gros au plus fin : (1) wheels torch/torchvision `+cpu` (index PyTorch
-   CPU) → supprime le payload CUDA (plusieurs Go) inutile en serving CPU ; (2)
-   `requirements-api.txt` séparé du training (pas de matplotlib/seaborn/sklearn/dvc) ; (3)
-   proxied-artifacts → l'API télécharge via le proxy MLflow, pas de S3/boto3 ni de creds
-   client ; (4) UI séparée et SANS torch (client léger). Mesuré : API 2.53 Go, UI 784 Mo.
-   Honnêteté : les 2.53 Go viennent surtout de mlflow (pandas/scipy) → piste
-   `mlflow-skinny` + flavor PyTorch seul.
 
 ### Dette / pistes Sprint 4
 
@@ -605,11 +503,18 @@ au bruit d'échantillonnage près, donc baseline auditable).
 
 1. La dérive **radiométrique** est vue tôt. Vraie marge de manœuvre.
 
-2. **Le flou est un angle mort STRUCTUREL.** L'accuracy tombe 97 → 81 → 61 % avec
-   une part en dérive à **0.00**. 11 features sur 12 décrivent la couleur, 1 la
-   texture. Une perturbation qui bouge UNE feature ne peut pas atteindre un seuil
-   sur une PART. **Aucune valeur du seuil ne corrige ça** — c'est une conséquence
-   de conception, maintenant mesurée et non plus soupçonnée.
+2. **Le flou est un angle mort STRUCTUREL.** L'accuracy tombe 97 → 81 → 61 %
+   (0.2 → 0.3 → 0.4) alors que la part en dérive reste à **0.00** jusqu'à 0.3 et
+   n'atteint que **0.42** à 0.4, sous le seuil de 0.5 ; l'alerte tombe à 0.6,
+   accuracy déjà à 27 %. 11 features sur 12 décrivent la couleur ; la seule feature
+   de texture, `sharpness`, n'est jamais la plus déplacée dans
+   `experiments/drift_curve/results.json`. Ce qui finit par déclencher, ce sont des
+   statistiques de couleur du second ordre (`saturation`, puis `std_b`), ce qui est
+   cohérent avec un lissage qui écrase la dispersion des canaux (non mesuré par
+   feature : rapports Evidently non versionnés). Abaisser le seuil de part à n'importe
+   quelle valeur donnerait au mieux une alerte à 0.4, encore après le début de la
+   chute. **Aucune valeur du seuil ne corrige ça** — c'est une conséquence de
+   conception, maintenant mesurée et non plus soupçonnée.
 
 3. **Le modèle devient confiant ET faux.** Sous voile nuageux total : accuracy
    0.098 (= hasard sur 10 classes), entropie moyenne **0.008** contre 0.021 au
@@ -641,29 +546,6 @@ publiait le port mais toute connexion hôte atteignait l'AUTRE base. L'échec
 d'authentification revenait en codepage ANSI → `UnicodeDecodeError`, une exception
 qui nomme un problème d'encodage et ne dit rien de la cause. Corrigé par un port
 inhabituel + un diagnostic explicite dans `_describe_error`.
-
-### Questions recruteur — Sprint 4
-
-1. **« Data drift ou concept drift, et lequel détectez-vous ? »** → décomposition
-   `P(X)P(Y|X)`, tableau observable/non observable, « le concept drift n'est pas
-   détectable sans labels, point ».
-2. **« Votre KS alerte tous les jours sur 500k lignes, pourquoi ? »** → H₀ toujours
-   fausse + `D_crit ≈ √(2/n)`, passer à un effect size, plafonner la fenêtre.
-3. **« Le détecteur alerte avant la chute ? »** → les chiffres ci-dessus, y compris
-   le −0.3 du flou. Ne jamais présenter que les trois bons cas.
-4. **« Pourquoi ne pas déclencher sur la confiance moyenne ? »** → mesuré
-   non monotone : 0.021 → 0.145 → 0.008 pendant que l'accuracy fait 0.986 → 0.098.
-5. **« Réentraînement auto sans gate : le risque ? »** → les 5 arguments, avec le
-   3/5 refusé du Sprint 2 comme preuve.
-6. **« Prometheus ou Postgres pour le drift ? »** → Prometheus = « le service
-   va-t-il bien maintenant » (pré-agrégé, cardinalité bornée) ; Postgres = « qu'a vu
-   la prod exactement » (ligne à ligne, jointure, historique). Mettre des valeurs de
-   features en labels Prometheus = cardinalité non bornée = mort du serveur.
-7. **« Votre référence, c'est quoi et pourquoi ? »** → le split TRAIN, sans
-   augmentation, figé et commité. Une référence glissante ne détecte jamais une
-   dérive lente (grenouille bouillie). L'augmentation est un régularisateur, pas
-   une description du monde ; l'inclure élargirait la référence et aveuglerait le
-   détecteur sur la dérive radiométrique.
 
 ### Test d'acceptation de bout en bout (validé)
 
