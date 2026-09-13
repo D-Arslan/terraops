@@ -30,6 +30,14 @@ def degraded_client(monkeypatch):
     monkeypatch.setattr(api.state, "load", _fail)
     api.state.model = None
     api.state.version = None
+    # "No database" must be true whatever the host runs: with the compose stack
+    # up, the default URI (localhost:55433) WOULD connect, and this fixture
+    # would silently test the healthy path. Port 1 is refused instantly.
+    monkeypatch.setattr(api.predictions_log, "db_uri",
+                        "postgresql://mlflow:mlflow@127.0.0.1:1/mlflow")
+    api.predictions_log.written = 0
+    api.predictions_log.ready = False
+    api.predictions_log.last_error = None
     with TestClient(api.app) as client:
         yield client
 

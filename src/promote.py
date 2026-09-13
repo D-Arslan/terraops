@@ -94,6 +94,33 @@ def per_class_recall(y_true, y_pred):
     }
 
 
+def gate_reasons(cand_acc, cand_recall, champ_acc, champ_recall, pcfg):
+    """The three gate rules as a pure function: returns the list of refusal
+    reasons (empty list = promoted). No MLflow, no torch: this is the part of
+    the gate that is unit-tested, so the rules cannot drift silently.
+
+    champ_acc / champ_recall are None in the bootstrap case (no champion yet):
+    only the absolute floor applies then.
+    """
+    reasons = []
+    if cand_acc < pcfg["min_accuracy"]:
+        reasons.append(f"accuracy {cand_acc:.4f} < absolute floor "
+                       f"{pcfg['min_accuracy']:.4f}")
+    if champ_acc is not None:
+        delta_acc = cand_acc - champ_acc
+        if delta_acc < pcfg["min_delta"]:
+            reasons.append(
+                f"margin {delta_acc:+.4f} < required {pcfg['min_delta']:.4f} "
+                f"(a win inside the noise band is not a win)")
+        for cls in EUROSAT_CLASSES:
+            drop = champ_recall[cls] - cand_recall[cls]
+            if drop > pcfg["max_class_recall_drop"]:
+                reasons.append(
+                    f"recall regression on {cls}: -{drop:.4f} "
+                    f"(max allowed {pcfg['max_class_recall_drop']:.4f})")
+    return reasons
+
+
 def main():
     parser = argparse.ArgumentParser(description="Champion/challenger promotion gate")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -165,21 +192,7 @@ def main():
     print("=" * 68)
 
     # --- Decision ------------------------------------------------------------
-    reasons = []
-    if cand_acc < pcfg["min_accuracy"]:
-        reasons.append(f"accuracy {cand_acc:.4f} < absolute floor "
-                       f"{pcfg['min_accuracy']:.4f}")
-    if champ_acc is not None:
-        if delta_acc < pcfg["min_delta"]:
-            reasons.append(
-                f"margin {delta_acc:+.4f} < required {pcfg['min_delta']:.4f} "
-                f"(a win inside the noise band is not a win)")
-        for cls in EUROSAT_CLASSES:
-            drop = champ_recall[cls] - cand_recall[cls]
-            if drop > pcfg["max_class_recall_drop"]:
-                reasons.append(
-                    f"recall regression on {cls}: -{drop:.4f} "
-                    f"(max allowed {pcfg['max_class_recall_drop']:.4f})")
+    reasons = gate_reasons(cand_acc, cand_recall, champ_acc, champ_recall, pcfg)
 
     # Record the gate's verdict on the version itself — auditable either way.
     client.set_model_version_tag(name, version, "gate_accuracy", f"{cand_acc:.4f}")
