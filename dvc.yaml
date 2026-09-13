@@ -54,7 +54,6 @@ stages:
     outs:
       - metrics/confusion_matrix.png:
           cache: false
-      - metrics/misclassified.png:
-          cache: false
+      - metrics/misclassified.png      # 1.3 MB per version: DVC-cached, not in Git
       - metrics/classification_report.txt:
           cache: false

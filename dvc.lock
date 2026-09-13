@@ -9,8 +9,8 @@ stages:
       size: 1096
     - path: src/utils.py
       hash: md5
-      md5: ceb4e986a3107ff66cfe480d5c097705
-      size: 4491
+      md5: c3d859d811fc29167e2647763afc58cc
+      size: 4490
     params:
       params.yaml:
         prepare:
@@ -31,20 +31,20 @@ stages:
       nfiles: 27001
     - path: src/dataset.py
       hash: md5
-      md5: f134a1b54e6bddcaf8e0e2b99f973f09
-      size: 3771
+      md5: 2e616b7f31ebbc0a8423e31b8f4c3a7f
+      size: 3974
     - path: src/model.py
       hash: md5
       md5: c94ef9486752b0473ebd715f32694f6c
       size: 3072
     - path: src/train.py
       hash: md5
-      md5: 5c1848db48615c931b8e5d9f64514f21
-      size: 11333
+      md5: 4fb7d444a7d01a784b4e6857fab3d818
+      size: 11739
     - path: src/utils.py
       hash: md5
-      md5: ceb4e986a3107ff66cfe480d5c097705
-      size: 4491
+      md5: c3d859d811fc29167e2647763afc58cc
+      size: 4490
     params:
       params.yaml:
         data:
@@ -68,25 +68,25 @@ stages:
             jitter_contrast: 0.2
             jitter_saturation: 0.1
         model:
-          arch: mobilenet_v3_small
+          arch: resnet18
           num_classes: 10
           pretrained: true
           dropout: 0.3
           unfreeze: last_block
         seed: 42
         train:
-          epochs: 6
+          epochs: 25
           lr: 0.001
           batch_size: 64
           weight_decay: 0.0001
-          patience: 3
+          patience: 5
           scheduler_factor: 0.1
           scheduler_patience: 3
     outs:
     - path: models/best_model.pth
       hash: md5
-      md5: 98e118587d9f5793f16a6640a35819a5
-      size: 13873665
+      md5: fc6bea9870562b08982dfe48d2796baa
+      size: 112009854
   evaluate:
     cmd: python src/evaluate.py
     deps:
@@ -97,24 +97,24 @@ stages:
       nfiles: 27001
     - path: models/best_model.pth
       hash: md5
-      md5: 98e118587d9f5793f16a6640a35819a5
-      size: 13873665
+      md5: fc6bea9870562b08982dfe48d2796baa
+      size: 112009854
     - path: src/dataset.py
       hash: md5
-      md5: f134a1b54e6bddcaf8e0e2b99f973f09
-      size: 3771
+      md5: 2e616b7f31ebbc0a8423e31b8f4c3a7f
+      size: 3974
     - path: src/evaluate.py
       hash: md5
-      md5: 2057ed2ade0f5a1ee37eeee86bcf9f23
-      size: 5548
+      md5: b2f335059e0711dc4499fb51281951ee
+      size: 5715
     - path: src/model.py
       hash: md5
       md5: c94ef9486752b0473ebd715f32694f6c
       size: 3072
     - path: src/utils.py
       hash: md5
-      md5: ceb4e986a3107ff66cfe480d5c097705
-      size: 4491
+      md5: c3d859d811fc29167e2647763afc58cc
+      size: 4490
     params:
       params.yaml:
         data:
@@ -140,7 +140,7 @@ stages:
         evaluate:
           batch_size: 64
         model:
-          arch: mobilenet_v3_small
+          arch: resnet18
           num_classes: 10
           pretrained: true
           dropout: 0.3
@@ -149,17 +149,17 @@ stages:
     outs:
     - path: metrics/classification_report.txt
       hash: md5
-      md5: bd7720856c364fc9874a01bb58d70abd
+      md5: c41fcb8ff3276137a63228740d7e6752
       size: 886
     - path: metrics/confusion_matrix.png
       hash: md5
-      md5: 49a6ee6a1638297c7c017a3d9659509c
-      size: 110464
+      md5: 500d2d1b3ca3f412edc39d4b34b7cc04
+      size: 102586
     - path: metrics/metrics.json
       hash: md5
-      md5: b2c07ced5162301a08601cc8f6846347
-      size: 162
+      md5: c62d80510e869722f6e224e82aaaafb5
+      size: 161
     - path: metrics/misclassified.png
       hash: md5
-      md5: 07738d686a69719d482a1a39051f8297
-      size: 1490238
+      md5: 8c309899e58aa10bc41541f8763f3c78
+      size: 1304151
