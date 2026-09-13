@@ -109,11 +109,17 @@ not self-declared).
 is flagged at intensity 0.2 while accuracy still holds at 96–98% up to 0.4. The detector
 buys real time.
 
-**2. Blur is a structural blind spot.** Accuracy falls 97% → 81% → 61% while the drifted
-feature share stays at exactly **0.00**. Eleven of the twelve monitored features describe
-colour; one describes texture. A perturbation that moves a single feature can never reach
-a *share*-of-features threshold of 0.5. **No value of that threshold fixes this** — it is a
-design consequence, now measured rather than suspected.
+**2. Blur is a structural blind spot.** Accuracy falls 97% → 81% → 61% (intensity
+0.2 → 0.3 → 0.4) while the drifted feature share stays at **0.00** up to 0.3 and
+reaches only **0.42** at 0.4, still under the 0.5 alert threshold. The detector
+fires at 0.6, when accuracy is already at 27%. Eleven of the twelve monitored
+features describe colour; the only texture feature (`sharpness`) is never the
+top-drifting one in `experiments/drift_curve/results.json`. What eventually trips
+the alert is second-order colour statistics (`saturation`, then `std_b`), consistent
+with smoothing collapsing channel spread. Lowering the share threshold to any value would
+at best move the alert to 0.4, still after the drop began. **No value of that
+threshold fixes this** — it is a design consequence, now measured rather than
+suspected.
 
 **3. The model becomes confident and wrong.** Under a full cloud veil:
 
